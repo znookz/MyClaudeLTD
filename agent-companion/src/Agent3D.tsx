@@ -6,6 +6,7 @@ import { FileCode2, User } from 'lucide-react';
 import SuccessEffect from './SuccessEffect';
 import { STATUS_META, type AgentState } from './types';
 import type { Placement } from './utils/layout';
+import { DOOR, POIS, claimPoi, findPath, releasePoi, type Vec3 } from './utils/office';
 import { authorColor } from './utils/people';
 import { registerAnchors, unregisterAnchors } from './utils/registry';
 import { getSpeakerLevel, releaseSpeaker } from './utils/sound';
@@ -20,9 +21,18 @@ interface Agent3DProps {
 }
 
 const { damp, lerp } = THREE.MathUtils;
-const BODY_Y = 1.15;
+const BODY_Y = 1.17;
 const TWO_PI = Math.PI * 2;
 const DIM_OPACITY = 0.2;
+const WALK_SPEED = 1.7; // หน่วย/วินาที
+const STRIDE_RATE = 5.2; // เฟสก้าวเดิน (rad) ต่อหน่วยระยะทาง
+const SIT_DROP = 0.3; // ตัวลดลงเท่าไรตอนนั่ง
+
+interface Dest {
+  position: Vec3;
+  lookAt: Vec3 | null;
+  pose: 'sit' | 'stand';
+}
 
 const easeOutBack = (x: number) => {
   const c1 = 1.70158;
@@ -51,6 +61,10 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
   const halo = useRef<THREE.Mesh>(null);
   const scanRing = useRef<THREE.Mesh>(null);
   const keyboard = useRef<THREE.Group>(null);
+  const leftHip = useRef<THREE.Group>(null);
+  const rightHip = useRef<THREE.Group>(null);
+  const leftKnee = useRef<THREE.Group>(null);
+  const rightKnee = useRef<THREE.Group>(null);
   const statusLightMat = useRef<THREE.MeshStandardMaterial>(null);
   const glowLight = useRef<THREE.PointLight>(null);
 
@@ -60,6 +74,19 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     spin: 0,
     nextBlink: 1 + Math.random() * 3,
     blinkStart: -10,
+    // ---- การเดิน ----
+    path: [] as Vec3[],
+    destKey: '',
+    arrived: false,
+    walk: 0, // 0..1 ผสมท่าเดิน
+    phase: 0, // เฟสก้าวขา
+    sit: 0, // 0..1 ผสมท่านั่ง
+    heading: new THREE.Vector3(0, 0, 1),
+    // ---- เดินเล่นตอนว่าง ----
+    poi: -1,
+    wanderDest: null as Dest | null,
+    nextWanderAt: 2 + Math.random() * 3,
+    leaveAt: 0,
   });
   const eyeMaterial = useMemo(
     () =>
@@ -72,14 +99,12 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     [],
   );
   useEffect(() => () => eyeMaterial.dispose(), [eyeMaterial]);
-  const target = useMemo(() => new THREE.Vector3(), []);
   const lookTarget = useMemo(() => new THREE.Vector3(), []);
   const dummy = useMemo(() => new THREE.Object3D(), []);
 
-  // ตำแหน่งเกิด: ใต้จุดหมายเล็กน้อย → จะ "ลอยขึ้นมา" ด้วย lerp
+  // ตำแหน่งเกิด: หน้าประตูห้อง → เดินเข้ามาหาโต๊ะ (เลื่อนเล็กน้อยตามลำดับ ไม่ให้ซ้อนกัน)
   const spawnPosition = useMemo<[number, number, number]>(
-    () => [placement.position[0], -1.5, placement.position[2]],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => [DOOR.spawn[0], 0, DOOR.spawn[2] + (Math.random() - 0.5) * 0.4],
     [],
   );
 
@@ -92,6 +117,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
   }, [sessionId]);
 
   useEffect(() => () => releaseSpeaker(sessionId), [sessionId]);
+  useEffect(() => () => releasePoi(sessionId), [sessionId]);
 
   // ตัวกรองสถานะ: ทำให้ตัวที่ไม่ตรงโปร่งใส (เก็บค่า opacity เดิมไว้ใน userData เพื่อคืนค่า)
   useEffect(() => {
@@ -134,26 +160,87 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
       spawn.current?.scale.setScalar(Math.max(0.001, easeOutBack(a.spawnT)));
     }
 
-    // ===== 2) บิน: Vector3.lerp แบบ frame-rate independent =====
-    // alpha = 1 - e^(-λ·dt) → ได้ความเร็วเท่ากันไม่ว่าจอจะ 60 หรือ 144 Hz
-    target.set(placement.position[0], placement.position[1], placement.position[2]);
-    const distance = root.current.position.distanceTo(target);
-    root.current.position.lerp(target, 1 - Math.exp(-dt * 1.8));
-    // ระหว่างบินไกล ๆ ยกตัวสูงขึ้น → เป็นวิถีโค้งแทนการไถลบนพื้น
-    const flightLift = Math.min(distance, 3) * 0.35;
-
-    // ===== 3) หันหน้า: lookAt ใส่ dummy แล้ว slerp quaternion ให้หมุนนุ่ม =====
-    if (placement.lookAt) {
-      lookTarget.set(placement.lookAt[0], root.current.position.y, placement.lookAt[2]);
+    // ===== 2) เลือกจุดหมาย: ปกติตาม placement; ถ้าว่างอยู่ (idle) จะเดินเล่นไปจุดต่าง ๆ ในห้อง =====
+    const pos = root.current.position;
+    if (!placement.wander) {
+      if (a.poi >= 0) {
+        releasePoi(sessionId);
+        a.poi = -1;
+      }
+      a.wanderDest = null;
+      a.leaveAt = 0;
     } else {
-      lookTarget.set(state.camera.position.x, root.current.position.y, state.camera.position.z);
+      if (a.wanderDest && a.arrived && a.leaveAt === 0) a.leaveAt = t + 4 + Math.random() * 6; // ยืนอยู่สักพัก
+      if (a.wanderDest && a.arrived && t >= a.leaveAt) {
+        releasePoi(sessionId);
+        a.poi = -1;
+        a.wanderDest = null;
+        a.leaveAt = 0;
+        a.nextWanderAt = Math.random() < 0.5 ? t : t + 3 + Math.random() * 5; // ไปที่ใหม่เลย หรือกลับไปยืนรอที่โต๊ะ
+      }
+      if (!a.wanderDest && a.arrived && t >= a.nextWanderAt) {
+        const idx = claimPoi(sessionId);
+        if (idx >= 0) {
+          const poi = POIS[idx];
+          a.poi = idx;
+          a.wanderDest = { position: poi.stand, lookAt: poi.lookAt, pose: poi.pose };
+        } else {
+          a.nextWanderAt = t + 4;
+        }
+      }
     }
-    dummy.position.copy(root.current.position);
-    dummy.lookAt(lookTarget);
-    root.current.quaternion.slerp(dummy.quaternion, 1 - Math.exp(-dt * 4));
+    const dest: Dest = placement.wander && a.wanderDest ? a.wanderDest : placement;
 
-    // ===== 4) ท่าทางตามสถานะ (ค่าทั้งหมด damp เข้าหาเป้า → เปลี่ยนท่าแบบลื่น) =====
-    let bobAmp = 0.06;
+    // ===== 3) เดินตามเส้นทาง (A* เลี่ยงเฟอร์นิเจอร์) ด้วยความเร็วคงที่ =====
+    const destKey = `${dest.position[0].toFixed(2)},${dest.position[2].toFixed(2)}`;
+    if (destKey !== a.destKey) {
+      a.destKey = destKey;
+      a.arrived = false;
+      a.path = findPath([pos.x, 0, pos.z], dest.position);
+    }
+
+    let moving = false;
+    if (a.path.length > 0) {
+      const wp = a.path[0];
+      const dx = wp[0] - pos.x;
+      const dz = wp[2] - pos.z;
+      const d = Math.hypot(dx, dz);
+      const step = WALK_SPEED * dt;
+      moving = true;
+      if (d > 1e-4) a.heading.set(dx / d, 0, dz / d);
+      if (d <= step) {
+        pos.x = wp[0];
+        pos.z = wp[2];
+        a.path.shift();
+        a.phase += d * STRIDE_RATE;
+      } else {
+        pos.x += (dx / d) * step;
+        pos.z += (dz / d) * step;
+        a.phase += step * STRIDE_RATE;
+      }
+    } else {
+      a.arrived = true;
+    }
+    a.walk = damp(a.walk, moving ? 1 : 0, 10, dt);
+    const walk = a.walk;
+    // นั่งเมื่อถึงเก้าอี้แล้วเท่านั้น (ระหว่างเดินยังยืน)
+    a.sit = damp(a.sit, dest.pose === 'sit' && a.arrived ? 1 : 0, 6, dt);
+    const sit = a.sit;
+
+    // ===== 4) หันหน้า: ระหว่างเดินหันตามทิศทาง; ถึงแล้วหันไปทาง lookAt (หรือเข้าหากล้อง) =====
+    if (moving && walk > 0.05) {
+      lookTarget.set(pos.x + a.heading.x * 3, pos.y, pos.z + a.heading.z * 3);
+    } else if (dest.lookAt) {
+      lookTarget.set(dest.lookAt[0], pos.y, dest.lookAt[2]);
+    } else {
+      lookTarget.set(state.camera.position.x, pos.y, state.camera.position.z);
+    }
+    dummy.position.copy(pos);
+    dummy.lookAt(lookTarget);
+    root.current.quaternion.slerp(dummy.quaternion, 1 - Math.exp(-dt * (moving ? 9 : 4)));
+
+    // ===== 5) ท่าทางตามสถานะ (ค่าทั้งหมด damp เข้าหาเป้า → เปลี่ยนท่าแบบลื่น) =====
+    let bobAmp = 0.02;
     let bobSpeed = 2;
     let bodyYaw = 0;
     let headTiltZ = 0;
@@ -164,14 +251,14 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
 
     switch (status) {
       case 'idle':
-        bobAmp = 0.14;
-        bobSpeed = 1.2;
-        bodyYaw = Math.sin(t * 0.55) * 0.35;
+        bobAmp = 0.012; // หายใจเบา ๆ (ยืนบนพื้นแล้ว ไม่ลอย)
+        bobSpeed = 1.6;
+        bodyYaw = Math.sin(t * 0.55) * 0.3;
         lx = Math.sin(t * 1.2) * 0.12;
         rx = -Math.sin(t * 1.2) * 0.12;
         break;
       case 'thinking':
-        bobAmp = 0.05;
+        bobAmp = 0.01;
         bobSpeed = 1;
         headTiltZ = 0.3 + Math.sin(t * 0.8) * 0.05;
         headPitch = -0.08;
@@ -180,7 +267,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
         rz = -0.75;
         break;
       case 'coding': {
-        bobAmp = 0.03;
+        bobAmp = 0.008;
         bobSpeed = 2.5;
         headPitch = 0.22; // ก้มมองคีย์บอร์ด
         const type = (phase: number) => Math.sin(t * 28 + phase) * 0.14 + Math.sin(t * 17 + phase * 2) * 0.06;
@@ -191,9 +278,9 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
         break;
       }
       case 'testing':
-        bobAmp = 0.05;
+        bobAmp = 0.01;
         bobSpeed = 1.6;
-        bodyYaw = Math.sin(t * 1.7) * 1.1; // หันซ้ายขวาสแกน
+        bodyYaw = Math.sin(t * 1.7) * (0.55 + 0.5 * (1 - sit)); // หันซ้ายขวาสแกน (นั่งอยู่หมุนน้อยกว่า)
         rx = -1.5; // แขนขวายื่นเป็นเครื่องสแกน
         rz = -0.1;
         break;
@@ -206,7 +293,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
         rx = 0;
         break;
       case 'error':
-        bobAmp = 0.02;
+        bobAmp = 0.01;
         shakeX = Math.sin(t * 70) * 0.07;
         shakeRoll = Math.sin(t * 55) * 0.06;
         headPitch = 0.3;
@@ -215,11 +302,20 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
         break;
     }
 
+    // ระหว่างเดิน: ไม่ส่ายตัว, แขนแกว่งสลับกับขา
+    bodyYaw *= 1 - walk;
+    lx = lx * (1 - walk) + -Math.sin(a.phase) * 0.55 * walk;
+    rx = rx * (1 - walk) + Math.sin(a.phase) * 0.55 * walk;
+    lz = lz * (1 - walk) + -0.1 * walk;
+    rz = rz * (1 - walk) + 0.1 * walk;
+
     const b = body.current;
     const hop = status === 'success' ? Math.abs(Math.sin(t * 4.5)) * 0.35 : 0;
-    const targetY = BODY_Y + flightLift + Math.sin(t * bobSpeed) * bobAmp + hop;
-    b.position.y = damp(b.position.y, targetY, 8, dt);
+    const stepBob = Math.abs(Math.sin(a.phase)) * 0.05 * walk;
+    const targetY = BODY_Y - SIT_DROP * sit + stepBob + Math.sin(t * bobSpeed) * bobAmp + hop;
+    b.position.y = damp(b.position.y, targetY, 14, dt);
     b.position.x = status === 'error' ? shakeX : damp(b.position.x, 0, 10, dt);
+    b.rotation.x = damp(b.rotation.x, 0.09 * walk, 8, dt); // เอนตัวไปข้างหน้าตอนเดิน
     b.rotation.z = status === 'error' ? shakeRoll : damp(b.rotation.z, 0, 10, dt);
     b.rotation.y = status === 'success' ? a.spin : damp(b.rotation.y, bodyYaw, 5, dt);
 
@@ -227,7 +323,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     head.current.rotation.x = damp(head.current.rotation.x, headPitch, 6, dt);
 
     // แขนตอนพิมพ์ต้องตอบสนองไว (λ สูง) ไม่งั้นการสั่นจะถูก damp จนเรียบ
-    const armLambda = status === 'coding' || status === 'error' ? 30 : 7;
+    const armLambda = status === 'coding' || status === 'error' ? 30 : walk > 0.3 ? 14 : 7;
     if (leftArm.current && rightArm.current) {
       leftArm.current.rotation.x = damp(leftArm.current.rotation.x, lx, armLambda, dt);
       leftArm.current.rotation.z = damp(leftArm.current.rotation.z, lz, armLambda, dt);
@@ -235,7 +331,19 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
       rightArm.current.rotation.z = damp(rightArm.current.rotation.z, rz, armLambda, dt);
     }
 
-    // ===== 5) อุปกรณ์ประกอบตามสถานะ =====
+    // ขา: เดิน = แกว่งสลับข้างพร้อมงอเข่า, นั่ง = ต้นขาชี้ไปข้างหน้า ท่อนล่างตั้งฉากลงพื้น
+    // (หน้าของ Agent อยู่ที่ +z → rotation.x ติดลบ = เหวี่ยงขาไปข้างหน้า)
+    if (leftHip.current && rightHip.current && leftKnee.current && rightKnee.current) {
+      const hipL = Math.sin(a.phase) * 0.62 * walk;
+      const kneeL = Math.max(0, -Math.cos(a.phase)) * 0.95 * walk;
+      const kneeR = Math.max(0, Math.cos(a.phase)) * 0.95 * walk;
+      leftHip.current.rotation.x = lerp(hipL, -Math.PI / 2, sit);
+      rightHip.current.rotation.x = lerp(-hipL, -Math.PI / 2, sit);
+      leftKnee.current.rotation.x = lerp(kneeL, Math.PI / 2, sit);
+      rightKnee.current.rotation.x = lerp(kneeR, Math.PI / 2, sit);
+    }
+
+    // ===== 6) อุปกรณ์ประกอบตามสถานะ =====
     if (halo.current) {
       halo.current.visible = status === 'thinking';
       halo.current.rotation.z += dt * 9;
@@ -247,7 +355,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
       scanRing.current.position.y = Math.sin(t * 2.2) * 0.75; // วงแหวนเลื่อนขึ้นลงรอบตัว
     }
     if (keyboard.current) {
-      keyboard.current.visible = status === 'coding';
+      keyboard.current.visible = status === 'coding' && sit < 0.5; // นั่งโต๊ะแล้วมีคีย์บอร์ดจริง
       const m = (keyboard.current.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
       m.opacity = 0.22 + Math.sin(t * 12) * 0.06 + Math.random() * 0.04;
     }
@@ -255,9 +363,9 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     // ไฟสถานะ: error กะพริบถี่, อื่น ๆ หายใจช้า ๆ
     const lightPower = status === 'error' ? (Math.sin(t * 26) > 0 ? 5 : 0.2) : 2.2 + Math.sin(t * 3) * 0.6;
     if (statusLightMat.current) statusLightMat.current.emissiveIntensity = lightPower;
-    if (glowLight.current) glowLight.current.intensity = lightPower * 0.9;
+    if (glowLight.current) glowLight.current.intensity = lightPower * 0.45;
 
-    // ===== 6) Lip sync จาก AnalyserNode =====
+    // ===== 7) Lip sync จาก AnalyserNode =====
     const level = getSpeakerLevel(sessionId);
     if (mouth.current && mouthMat.current) {
       mouth.current.scale.y = damp(mouth.current.scale.y, 0.35 + level * 2.8, 25, dt);
@@ -265,7 +373,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
       mouthMat.current.emissiveIntensity = 0.5 + level * 6;
     }
 
-    // ===== 7) กะพริบตา (เฉลี่ยทุก ~3.5 วิ แบบสุ่ม) + ตาสว่างวาบตามเสียง =====
+    // ===== 8) กะพริบตา (เฉลี่ยทุก ~3.5 วิ แบบสุ่ม) + ตาสว่างวาบตามเสียง =====
     if (t > a.nextBlink) {
       a.blinkStart = t;
       a.nextBlink = t + 2.5 + Math.random() * 2;
@@ -315,12 +423,32 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
             <boxGeometry args={[0.5, 0.04, 0.02]} />
             <meshStandardMaterial color={accent} />
           </mesh>
-          {/* ไอพ่นใต้ตัว */}
-          <mesh position={[0, -0.55, 0]} rotation={[Math.PI, 0, 0]}>
-            <coneGeometry args={[0.16, 0.26, 20]} />
+          {/* เอว */}
+          <mesh position={[0, -0.4, 0]}>
+            <cylinderGeometry args={[0.3, 0.26, 0.08, 20]} />
             <meshStandardMaterial color="#1f2937" emissive={statusColor} emissiveIntensity={0.8} />
           </mesh>
-          <pointLight ref={glowLight} position={[0, -0.7, 0]} color={statusColor} distance={3.5} intensity={2} />
+          {/* ขา: สะโพก (hip) → ต้นขา → เข่า (knee) → น่อง → เท้า */}
+          {([-1, 1] as const).map((side) => (
+            <group key={side} ref={side < 0 ? leftHip : rightHip} position={[side * 0.2, -0.38, 0]}>
+              <RoundedBox args={[0.17, 0.4, 0.17]} radius={0.07} position={[0, -0.18, 0]} castShadow>
+                <meshStandardMaterial {...metal} />
+              </RoundedBox>
+              <group ref={side < 0 ? leftKnee : rightKnee} position={[0, -0.36, 0]}>
+                <mesh>
+                  <sphereGeometry args={[0.09, 14, 14]} />
+                  <meshStandardMaterial color="#94a3b8" metalness={0.5} roughness={0.3} />
+                </mesh>
+                <RoundedBox args={[0.15, 0.4, 0.15]} radius={0.06} position={[0, -0.19, 0]} castShadow>
+                  <meshStandardMaterial {...metal} />
+                </RoundedBox>
+                <RoundedBox args={[0.2, 0.08, 0.32]} radius={0.03} position={[0, -0.4, 0.06]} castShadow>
+                  <meshStandardMaterial color={accent} metalness={0.3} roughness={0.5} />
+                </RoundedBox>
+              </group>
+            </group>
+          ))}
+          <pointLight ref={glowLight} position={[0, 0.2, 0.6]} color={statusColor} distance={3} intensity={1.2} />
 
           {/* ---------- หัว ---------- */}
           <group ref={head} position={[0, 0.8, 0]}>

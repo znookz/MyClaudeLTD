@@ -18,7 +18,8 @@ agent-companion/
 └─ src/
    ├─ main.tsx
    ├─ App.tsx                   # state กลุ่ม, กติการวมกลุ่ม, chatter, Canvas 3D
-   ├─ Agent3D.tsx               # หุ่นยนต์ + ท่าทางตามสถานะ + lip sync + กะพริบตา + บิน/หันหน้า
+   ├─ Agent3D.tsx               # หุ่นยนต์ + ท่าทางตามสถานะ + lip sync + กะพริบตา + เดิน/นั่ง/หันหน้า
+├─ Office.tsx                # ห้อง office: พื้น ผนัง โต๊ะ 9 ตัว โต๊ะประชุม 3 ตัว มุมกาแฟ โซฟา ไวต์บอร์ด ประตู
    ├─ CollabBeam.tsx            # ลำแสงประวิ่งระหว่างหัวไหล่
    ├─ SuccessEffect.tsx         # shockwave + ประกายดาว + glow globe
    ├─ index.css                 # Tailwind
@@ -34,7 +35,8 @@ agent-companion/
    │  └─ useNow.ts              # นาฬิกาสำหรับแสดงเวลาที่ผ่านไป
    └─ utils/
       ├─ sound.ts               # Web Audio: jingle, mumble, AnalyserNode ต่อ agent
-      ├─ layout.ts              # คำนวณตำแหน่งบ้าน / ตำแหน่งรวมกลุ่ม
+      ├─ office.ts              # ผังห้อง (โต๊ะ/จุดประชุม/จุดเดินเล่น) + pathfinding A* เลี่ยงเฟอร์นิเจอร์
+      ├─ layout.ts              # จัดโต๊ะประจำตัว + คำนวณจุดหมายตามสถานะ / รวมกลุ่ม
       ├─ people.ts              # สีประจำตัวคนสั่งงาน, format เวลา
       └─ registry.ts            # ทะเบียน anchor หัวไหล่ (ให้ CollabBeam อ่านใน useFrame)
 ```
@@ -137,3 +139,13 @@ curl -X POST http://localhost:8080/event -H "content-type: application/json" \
 - **Beam อ่านตำแหน่งไหล่จาก registry** แล้วเขียนลง buffer เดิมของ `Line2` ทุกเฟรม
   (การเรียก `setPositions` ทุกเฟรมจะสร้าง GPU buffer ใหม่และทำให้หน่วยความจำรั่ว)
 - **Bridge ผูกกับ 127.0.0.1** และ hook จะ `exit 0` เสมอ → ถ้า bridge ไม่ได้เปิด Claude Code ก็ไม่ค้างหรือพัง
+
+## 7. ห้อง office และการเดิน
+
+- Agent ใหม่เดินเข้ามาทางประตู (ผนังขวา) แล้วไปที่โต๊ะประจำตัว (จัดตอนเข้ามาและคงเดิมจน session จบ)
+- **thinking / coding / testing / error** → นั่งที่โต๊ะ (จอบนโต๊ะเรืองตามสถานะ) · **success** → ลุกยืนฉลองหลังเก้าอี้
+- **idle** → ยืนรอแล้วเดินเล่นไปจุดต่าง ๆ: ชั้นหนังสือ กาแฟ ตู้ขนม ตู้น้ำ โซฟา (นั่ง) ไวต์บอร์ด เครื่องปริ้นท์ — จองจุดไม่ให้ซ้อนกัน
+- **ร่วมงาน task เดียวกัน** → เดินไปล้อมโต๊ะประชุม (โต๊ะเรืองแสงเมื่อมีกลุ่มใช้งาน)
+- เดินด้วยความเร็วคงที่ตามเส้นทาง A* บน grid 0.25 หน่วย แล้ว string-pulling ให้เป็นเส้นตรงยาว ๆ; ท่าเดิน/นั่งคำนวณจากเฟสก้าวเดียวกันทั้งขา แขน และตัว
+- ผนังที่อยู่ระหว่างกล้องกับห้องจะซ่อนเองตอนหมุนกล้อง
+- แก้ผังห้องที่ `src/utils/office.ts` (DESKS, MEETING_SPOTS, POIS, rects/circles ที่เป็นสิ่งกีดขวาง) และวาดเพิ่มใน `Office.tsx`

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { Grid, OrbitControls, Stars } from '@react-three/drei';
-import * as THREE from 'three';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls, Stars } from '@react-three/drei';
 import { Radio } from 'lucide-react';
 import Agent3D from './Agent3D';
 import CollabBeam from './CollabBeam';
+import Office from './Office';
 import DetailPanel from './components/DetailPanel';
 import SessionTable from './components/SessionTable';
 import SimulatorPanel, { type LogEntry } from './components/SimulatorPanel';
@@ -17,7 +17,8 @@ import {
   type AgentStatus,
   type AgentUpdateEvent,
 } from './types';
-import { computeCollabGroups, computePlacements } from './utils/layout';
+import { assignDesks, computeCollabGroups, computePlacements, groupSpots } from './utils/layout';
+import { DESKS } from './utils/office';
 import { playMumble, playSuccessJingle, setMuted, unlockAudio, voicePitchFor } from './utils/sound';
 
 const WS_URL: string = import.meta.env.VITE_AGENT_WS ?? 'ws://localhost:8080';
@@ -93,24 +94,6 @@ function describe(ev: AgentEvent): string {
 }
 
 // ============================================================
-//  ฉาก: จุดรวมพลตรงกลาง (เรืองแสงเมื่อมีกลุ่มร่วมงาน)
-// ============================================================
-function CollabZone({ active }: { active: boolean }) {
-  const mat = useRef<THREE.MeshBasicMaterial>(null);
-  useFrame((state) => {
-    if (!mat.current) return;
-    const target = active ? 0.35 + Math.sin(state.clock.elapsedTime * 3) * 0.15 : 0.08;
-    mat.current.opacity += (target - mat.current.opacity) * 0.05;
-  });
-  return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0.8]}>
-      <ringGeometry args={[1.9, 2.0, 96]} />
-      <meshBasicMaterial ref={mat} color="#67e8f9" transparent opacity={0.08} depthWrite={false} />
-    </mesh>
-  );
-}
-
-// ============================================================
 //  Simulator presets
 // ============================================================
 const TEAM = [
@@ -155,7 +138,20 @@ export default function App() {
     [store],
   );
   const groups = useMemo(() => computeCollabGroups(agents), [agents]);
-  const placements = useMemo(() => computePlacements(agents, groups), [agents, groups]);
+  // โต๊ะประจำตัว: คงเดิมไว้ตลอดอายุ session (ตัวอื่นเข้า/ออกก็ไม่ต้องเดินย้ายโต๊ะ)
+  const deskRef = useRef<Record<string, number>>({});
+  const deskOf = useMemo(() => {
+    const next = assignDesks(agents, deskRef.current);
+    deskRef.current = next;
+    return next;
+  }, [agents]);
+  const placements = useMemo(() => computePlacements(agents, groups, deskOf), [agents, groups, deskOf]);
+  const deskStatus = useMemo(() => {
+    const list: (AgentStatus | null)[] = DESKS.map(() => null);
+    for (const a of agents) if (deskOf[a.sessionId] !== undefined) list[deskOf[a.sessionId]] = a.status;
+    return list;
+  }, [agents, deskOf]);
+  const activeSpots = useMemo(() => new Set(groupSpots(groups).values()), [groups]);
 
   const beams = useMemo(() => {
     const list: { key: string; from: string; to: string }[] = [];
@@ -376,32 +372,27 @@ export default function App() {
         <Canvas
           shadows
           dpr={[1, 2]}
-          camera={{ position: [0, 4.8, 11], fov: 45 }}
+          camera={{ position: [0, 9, 15.5], fov: 45 }}
           onPointerMissed={() => setSelectedId(null)}
         >
           <color attach="background" args={['#0F141E']} />
-          <fog attach="fog" args={['#0F141E', 16, 34]} />
-          <ambientLight intensity={0.45} />
-          <hemisphereLight args={['#bcd7ff', '#0b1020', 0.6]} />
-          <directionalLight position={[5, 9, 6]} intensity={1.5} castShadow shadow-mapSize={[1024, 1024]} />
-          <Stars radius={70} depth={40} count={1800} factor={3} fade speed={0.6} />
-
-          <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-            <planeGeometry args={[60, 60]} />
-            <shadowMaterial opacity={0.35} />
-          </mesh>
-          <Grid
-            infiniteGrid
-            cellSize={0.6}
-            sectionSize={3}
-            cellThickness={0.6}
-            sectionThickness={1}
-            cellColor="#1e293b"
-            sectionColor="#334155"
-            fadeDistance={30}
-            fadeStrength={1.5}
+          <fog attach="fog" args={['#0F141E', 28, 60]} />
+          <ambientLight intensity={0.55} />
+          <hemisphereLight args={['#bcd7ff', '#1a2236', 0.7]} />
+          <directionalLight
+            position={[6, 14, 9]}
+            intensity={1.5}
+            castShadow
+            shadow-mapSize={[2048, 2048]}
+            shadow-camera-left={-12}
+            shadow-camera-right={12}
+            shadow-camera-top={12}
+            shadow-camera-bottom={-12}
+            shadow-bias={-0.0005}
           />
-          <CollabZone active={groups.size > 0} />
+          <Stars radius={80} depth={40} count={1800} factor={3} fade speed={0.6} />
+
+          <Office deskStatus={deskStatus} activeSpots={activeSpots} />
 
           {agents.map((a) => (
             <Agent3D
@@ -419,10 +410,10 @@ export default function App() {
 
           <OrbitControls
             makeDefault
-            target={[0, 1.4, 0]}
+            target={[0, 0.8, 0]}
             enablePan={false}
             minDistance={5}
-            maxDistance={22}
+            maxDistance={30}
             maxPolarAngle={Math.PI / 2.1}
           />
         </Canvas>
