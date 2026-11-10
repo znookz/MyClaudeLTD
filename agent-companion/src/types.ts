@@ -14,6 +14,12 @@ export const STATUS_META: Record<AgentStatus, { label: string; color: string }> 
   error: { label: 'ผิดพลาด', color: '#ef4444' },
 };
 
+export interface HistoryEntry {
+  ts: number;
+  status: AgentStatus;
+  file: string;
+}
+
 export interface AgentState {
   sessionId: string;
   author: string;
@@ -24,6 +30,12 @@ export interface AgentState {
   file: string;
   status: AgentStatus;
   updatedAt: number;
+  /** เวลาที่เห็น session นี้ครั้งแรก */
+  startedAt: number;
+  /** จำนวนครั้งที่สถานะ/ไฟล์เปลี่ยน (นับเป็น "ขั้น") */
+  steps: number;
+  /** ไทม์ไลน์ล่าสุด (เก่า → ใหม่) */
+  history: HistoryEntry[];
 }
 
 export interface AgentUpdateEvent {

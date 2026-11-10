@@ -147,7 +147,10 @@ export default function SimulatorPanel(p: Props) {
   };
 
   return (
-    <aside className="flex max-h-[45vh] w-full shrink-0 flex-col overflow-y-auto border-t border-white/10 bg-slate-950/95 md:h-screen md:max-h-none md:w-[380px] md:border-l md:border-t-0">
+    <aside
+      aria-label="Simulator"
+      className="flex w-full flex-col overflow-hidden rounded-[18px] border border-[#263247] bg-[#131A26]"
+    >
       {/* ---------- Connection & sound ---------- */}
       <Section title="การเชื่อมต่อ">
         <div className="flex items-center justify-between gap-2">

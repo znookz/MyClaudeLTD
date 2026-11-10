@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Grid, OrbitControls, Stars } from '@react-three/drei';
 import * as THREE from 'three';
-import { Bot, Radio } from 'lucide-react';
+import { Radio } from 'lucide-react';
 import Agent3D from './Agent3D';
 import CollabBeam from './CollabBeam';
+import DetailPanel from './components/DetailPanel';
+import SessionTable from './components/SessionTable';
 import SimulatorPanel, { type LogEntry } from './components/SimulatorPanel';
-import { useAgentSocket } from './hooks/useAgentSocket';
+import { useAgentSocket, type SocketStatus } from './hooks/useAgentSocket';
 import {
   AGENT_STATUSES,
   STATUS_META,
@@ -33,15 +35,25 @@ interface Store {
 
 type Action = AgentEvent | { type: 'clear' };
 
+const HISTORY_LIMIT = 12;
+
 function mergeAgent(prev: AgentState | undefined, ev: AgentUpdateEvent): AgentState {
+  const now = Date.now();
+  const status = ev.status ?? prev?.status ?? 'idle';
+  const file = ev.file ?? prev?.file ?? '';
+  // นับเป็น "ขั้น" ใหม่ เมื่อสถานะหรือไฟล์เปลี่ยนเท่านั้น
+  const changed = !prev || status !== prev.status || file !== prev.file;
   return {
     sessionId: ev.sessionId,
     author: ev.author ?? prev?.author ?? 'unknown',
     task: ev.task ?? prev?.task ?? 'Untitled task',
     taskId: ev.taskId ?? prev?.taskId ?? ev.task ?? 'default',
-    file: ev.file ?? prev?.file ?? '',
-    status: ev.status ?? prev?.status ?? 'idle',
-    updatedAt: Date.now(),
+    file,
+    status,
+    updatedAt: now,
+    startedAt: prev?.startedAt ?? now,
+    steps: (prev?.steps ?? 0) + (changed ? 1 : 0),
+    history: changed ? [...(prev?.history ?? []), { ts: now, status, file }].slice(-HISTORY_LIMIT) : (prev?.history ?? []),
   };
 }
 
@@ -110,9 +122,17 @@ const RANDOM_AUTHORS = ['Mint', 'Bank', 'Fah', 'Beam', 'Pond', 'June'];
 const RANDOM_TASKS = ['Refactor auth', 'Fix CI pipeline', 'DB migration', 'Landing page', 'Perf review'];
 const pick = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
 
+const SOCKET_PILL: Record<SocketStatus, { label: string; color: string; pulse: boolean }> = {
+  open: { label: 'Live', color: '#3DD6A3', pulse: true },
+  connecting: { label: 'กำลังเชื่อมต่อ', color: '#F5B544', pulse: true },
+  closed: { label: 'หลุด · ลองใหม่', color: '#FF6B6B', pulse: false },
+  disabled: { label: 'Offline (simulator)', color: '#8B97AB', pulse: false },
+};
+
 export default function App() {
   const [store, dispatch] = useReducer(reducer, { agents: {}, order: [] });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<AgentStatus | 'all'>('all');
   const [wsEnabled, setWsEnabled] = useState(true);
   const [soundOn, setSoundOn] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -280,18 +300,87 @@ export default function App() {
     return c;
   }, [agents]);
 
+  const collabIds = useMemo(() => new Set([...groups.values()].flat()), [groups]);
+  const peopleCount = useMemo(() => new Set(agents.map((a) => a.author)).size, [agents]);
+  // แผงรายละเอียดแสดงตัวที่เลือก; ถ้ายังไม่ได้เลือกให้โชว์ตัวแรก (เหมือน design)
+  const panelAgent = agents.find((a) => a.sessionId === selectedId) ?? agents[0];
+  const panelIndex = panelAgent ? agents.indexOf(panelAgent) + 1 : 0;
+  const live = SOCKET_PILL[socketStatus];
+
+  const filterPills: { key: AgentStatus | 'all'; label: string; color: string; count: number }[] = [
+    { key: 'all', label: 'ทั้งหมด', color: '#E6EBF2', count: agents.length },
+    ...AGENT_STATUSES.map((s) => ({ key: s, label: STATUS_META[s].label, color: STATUS_META[s].color, count: counts[s] })),
+  ];
+
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#050810] text-slate-100 md:flex-row">
+    <div className="min-h-screen bg-[#0B0F17] px-[clamp(16px,3vw,40px)] pb-12 pt-7 text-[#E6EBF2]">
+      <div className="mx-auto flex max-w-[1440px] flex-col gap-5">
+        {/* ===================== Header ===================== */}
+        <header className="flex flex-wrap items-end justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <div className="font-mono text-xs tracking-[0.08em] text-[#93A0B4]">CLAUDE CODE · LOCAL</div>
+            <h1 className="m-0 text-[32px] font-bold leading-tight tracking-[-0.01em]">Agent Floor</h1>
+            <p className="m-0 text-[15px] text-[#93A0B4]">
+              ห้องทำงาน 3 มิติของ agent — ดูว่าแต่ละ session กำลังทำอะไร และใครเป็นคนสั่ง
+            </p>
+          </div>
+          <div className="flex items-center gap-2.5 rounded-full border border-[#263247] bg-[#131A26] px-3.5 py-2 text-[13px] text-[#B7C2D3]">
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${live.pulse ? 'animate-pulse' : ''}`}
+              style={{ background: live.color }}
+            />
+            <span>
+              {live.label} · {agents.length} sessions · {peopleCount} คน
+            </span>
+          </div>
+        </header>
+
+        {/* ===================== ตัวกรองสถานะ ===================== */}
+        <nav aria-label="กรองตามสถานะ" className="flex flex-wrap gap-2">
+          {filterPills.map((p) => {
+            const active = filter === p.key;
+            return (
+              <button
+                type="button"
+                key={p.key}
+                onClick={() => setFilter(p.key)}
+                aria-pressed={active}
+                className={`inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-full border px-3.5 text-[13.5px] font-medium transition ${
+                  active
+                    ? 'border-[#E6EBF2] bg-[#E6EBF2] text-[#0B0F17]'
+                    : 'border-[#263247] bg-[#131A26] text-[#E6EBF2] hover:border-[#3A4864]'
+                }`}
+              >
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: p.key === 'all' && active ? '#0B0F17' : p.color }}
+                />
+                <span>{p.label}</span>
+                <span className="font-mono text-xs opacity-75">{p.count}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="flex flex-wrap items-start gap-5">
       {/* ===================== 3D Scene ===================== */}
-      <main className="relative min-h-[55vh] flex-1">
+      <section
+        aria-label="ห้องทำงาน 3 มิติ"
+        className="min-w-0 flex-[999_1_640px] overflow-hidden rounded-[18px] border border-[#263247] bg-[#0F141E]"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1E2838] px-[18px] py-3.5">
+          <div className="text-sm font-semibold">ฉาก 3 มิติ · {agents.length} agents</div>
+          <div className="text-[13px] text-[#93A0B4]">คลิกที่หุ่นเพื่อดูรายละเอียด · ลากเพื่อหมุนกล้อง</div>
+        </div>
+        <div className="relative h-[min(660px,72vh)] min-h-[420px]">
         <Canvas
           shadows
           dpr={[1, 2]}
           camera={{ position: [0, 4.8, 11], fov: 45 }}
           onPointerMissed={() => setSelectedId(null)}
         >
-          <color attach="background" args={['#050810']} />
-          <fog attach="fog" args={['#050810', 16, 34]} />
+          <color attach="background" args={['#0F141E']} />
+          <fog attach="fog" args={['#0F141E', 16, 34]} />
           <ambientLight intensity={0.45} />
           <hemisphereLight args={['#bcd7ff', '#0b1020', 0.6]} />
           <directionalLight position={[5, 9, 6]} intensity={1.5} castShadow shadow-mapSize={[1024, 1024]} />
@@ -320,6 +409,7 @@ export default function App() {
               agent={a}
               placement={placements[a.sessionId]}
               selected={selectedId === a.sessionId}
+              dimmed={filter !== 'all' && a.status !== filter}
               onSelect={setSelectedId}
             />
           ))}
@@ -337,22 +427,8 @@ export default function App() {
           />
         </Canvas>
 
-        {/* Overlay: หัวเรื่อง + สถานะการเชื่อมต่อ */}
+        {/* Overlay: กลุ่มร่วมงาน */}
         <div className="pointer-events-none absolute left-4 top-4 flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-lg font-bold tracking-tight">
-            <Bot size={20} className="text-sky-400" /> Agent Companion 3D
-          </div>
-          <div className="flex flex-wrap gap-1.5 text-[11px]">
-            {AGENT_STATUSES.map((s) => (
-              <span
-                key={s}
-                className="flex items-center gap-1 rounded-full border border-white/10 bg-slate-900/70 px-2 py-0.5"
-              >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: STATUS_META[s].color }} />
-                {STATUS_META[s].label} {counts[s]}
-              </span>
-            ))}
-          </div>
           {groups.size > 0 && (
             <div className="flex w-fit items-center gap-1.5 rounded-full bg-cyan-500/15 px-2.5 py-1 text-[11px] text-cyan-300">
               <Radio size={12} className="animate-pulse" />
@@ -370,9 +446,36 @@ export default function App() {
             </div>
           </div>
         )}
-      </main>
+        </div>
+        <div className="flex flex-wrap gap-x-[18px] gap-y-2 border-t border-[#1E2838] px-[18px] pb-4 pt-3 text-[12.5px] text-[#93A0B4]">
+          <span className="flex items-center gap-2">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-[#38bdf8] shadow-[0_0_8px_#38bdf8]" />
+            ไฟเสาอากาศ = สถานะ session
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="inline-block h-2.5 w-3.5 rounded-sm bg-[#E8956A]" />
+            สีหู/ไหล่ = คนสั่งงาน
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="inline-block h-0 w-5 border-t-2 border-dashed border-[#67e8f9]" />
+            ลำแสง = กำลังร่วมงาน task เดียวกัน
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="inline-block h-2.5 w-[18px] rounded-full border-2 border-[#E6EBF2]" />
+            วงขาว = session ที่เลือก
+          </span>
+        </div>
+      </section>
 
-      {/* ===================== Sidebar ===================== */}
+      {/* ===================== แผงขวา: รายละเอียด + Simulator ===================== */}
+      <aside className="flex min-w-0 flex-[1_1_340px] flex-col gap-5">
+      <DetailPanel
+        agent={panelAgent}
+        n={panelIndex}
+        inCollab={!!panelAgent && collabIds.has(panelAgent.sessionId)}
+        onSetStatus={setStatus}
+        onRemove={(id) => sim({ type: 'agent_remove', sessionId: id })}
+      />
       <SimulatorPanel
         agents={agents}
         selectedId={selectedId}
@@ -394,9 +497,14 @@ export default function App() {
         onRemove={(id) => sim({ type: 'agent_remove', sessionId: id })}
         onCustomEvent={sim}
         sharedTaskId={SHARED_TASK_ID}
-        collabIds={new Set([...groups.values()].flat())}
+        collabIds={collabIds}
         log={log}
       />
+      </aside>
+        </div>
+
+        <SessionTable agents={agents} selectedId={panelAgent?.sessionId ?? null} filter={filter} onSelect={setSelectedId} />
+      </div>
     </div>
   );
 }

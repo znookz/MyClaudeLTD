@@ -6,6 +6,7 @@ import { FileCode2, User } from 'lucide-react';
 import SuccessEffect from './SuccessEffect';
 import { STATUS_META, type AgentState } from './types';
 import type { Placement } from './utils/layout';
+import { authorColor } from './utils/people';
 import { registerAnchors, unregisterAnchors } from './utils/registry';
 import { getSpeakerLevel, releaseSpeaker } from './utils/sound';
 
@@ -13,19 +14,15 @@ interface Agent3DProps {
   agent: AgentState;
   placement: Placement;
   selected: boolean;
+  /** จางลงเมื่อไม่ตรงกับตัวกรองสถานะ */
+  dimmed?: boolean;
   onSelect: (sessionId: string) => void;
 }
 
 const { damp, lerp } = THREE.MathUtils;
 const BODY_Y = 1.15;
 const TWO_PI = Math.PI * 2;
-
-/** สีประจำตัวคนสั่งงาน — hash ชื่อ → hue (คนเดียวกันได้สีเดียวกันทุกครั้ง) */
-function authorColor(author: string): string {
-  let h = 0;
-  for (let i = 0; i < author.length; i++) h = (h * 31 + author.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360}, 70%, 60%)`;
-}
+const DIM_OPACITY = 0.2;
 
 const easeOutBack = (x: number) => {
   const c1 = 1.70158;
@@ -33,7 +30,7 @@ const easeOutBack = (x: number) => {
   return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
 };
 
-function Agent3D({ agent, placement, selected, onSelect }: Agent3DProps) {
+function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent3DProps) {
   const { sessionId, status } = agent;
   const statusColor = STATUS_META[status].color;
   const accent = useMemo(() => authorColor(agent.author), [agent.author]);
@@ -95,6 +92,26 @@ function Agent3D({ agent, placement, selected, onSelect }: Agent3DProps) {
   }, [sessionId]);
 
   useEffect(() => () => releaseSpeaker(sessionId), [sessionId]);
+
+  // ตัวกรองสถานะ: ทำให้ตัวที่ไม่ตรงโปร่งใส (เก็บค่า opacity เดิมไว้ใน userData เพื่อคืนค่า)
+  useEffect(() => {
+    const g = root.current;
+    if (!g) return;
+    g.traverse((o) => {
+      const m = (o as THREE.Mesh).material;
+      if (!m) return;
+      for (const mat of Array.isArray(m) ? m : [m]) {
+        if (!(mat instanceof THREE.MeshStandardMaterial)) continue;
+        if (mat.userData.baseOpacity === undefined) {
+          mat.userData.baseOpacity = mat.opacity;
+          mat.userData.baseTransparent = mat.transparent;
+        }
+        mat.transparent = dimmed || mat.userData.baseTransparent;
+        mat.opacity = dimmed ? mat.userData.baseOpacity * DIM_OPACITY : mat.userData.baseOpacity;
+        mat.needsUpdate = true;
+      }
+    });
+  }, [dimmed, status]);
 
   // ออกจาก success แล้ว: ห่อมุมหมุนสะสมกลับมาอยู่ใน [-π, π] เพื่อไม่ให้หมุนย้อนหลายรอบ
   useEffect(() => {
@@ -429,7 +446,12 @@ function Agent3D({ agent, placement, selected, onSelect }: Agent3DProps) {
       <Html position={[0, 3.05, 0]} center distanceFactor={9} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
         <div
           className="w-60 select-none rounded-xl border bg-slate-950/85 px-3 py-2 text-[11px] leading-snug text-slate-200 shadow-xl backdrop-blur"
-          style={{ borderColor: statusColor, boxShadow: `0 0 18px ${statusColor}55` }}
+          style={{
+            borderColor: statusColor,
+            boxShadow: `0 0 18px ${statusColor}55`,
+            opacity: dimmed ? 0.25 : 1,
+            transition: 'opacity 0.25s',
+          }}
         >
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5 font-semibold" style={{ color: statusColor }}>

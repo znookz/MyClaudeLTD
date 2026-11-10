@@ -25,14 +25,25 @@ agent-companion/
    ├─ types.ts                  # AgentStatus, AgentEvent, normalizeEvent()
    ├─ vite-env.d.ts
    ├─ components/
-   │  └─ SimulatorPanel.tsx     # Sidebar: ปุ่มจำลอง, คุมรายตัว, ส่ง JSON เอง, event log
+   │  ├─ DetailPanel.tsx        # แผงรายละเอียด session ที่เลือก: คนสั่ง, กำลังทำอะไร, ไทม์ไลน์, ปุ่มตามสถานะ
+   │  ├─ SessionTable.tsx       # ตาราง "ทุก session" คลิกแถวเพื่อเลือก
+   │  ├─ Avatar.tsx             # วงกลมอักษรตัวแรกของคนสั่งงาน
+   │  └─ SimulatorPanel.tsx     # ปุ่มจำลอง, คุมรายตัว, ส่ง JSON เอง, event log
    ├─ hooks/
-   │  └─ useAgentSocket.ts      # WebSocket client + auto-reconnect
+   │  ├─ useAgentSocket.ts      # WebSocket client + auto-reconnect
+   │  └─ useNow.ts              # นาฬิกาสำหรับแสดงเวลาที่ผ่านไป
    └─ utils/
       ├─ sound.ts               # Web Audio: jingle, mumble, AnalyserNode ต่อ agent
       ├─ layout.ts              # คำนวณตำแหน่งบ้าน / ตำแหน่งรวมกลุ่ม
+      ├─ people.ts              # สีประจำตัวคนสั่งงาน, format เวลา
       └─ registry.ts            # ทะเบียน anchor หัวไหล่ (ให้ CollabBeam อ่านใน useFrame)
 ```
+
+### หน้าจอ (ตาม design "Agent Floor")
+
+เรียงจากบนลงล่าง: **Header** (สถานะการเชื่อมต่อ · จำนวน sessions · จำนวนคน) → **ปุ่มกรองสถานะ** (หุ่นและแถวที่ไม่ตรงจะจางลง)
+→ **ฉาก 3 มิติ** คู่กับ **แผงรายละเอียด + Simulator** → **ตารางทุก session**
+ธีมมืด `#0B0F17` / การ์ด `#131A26` / เส้นขอบ `#263247` ฟอนต์ IBM Plex Sans Thai + IBM Plex Mono (โหลดจาก Google Fonts, ออฟไลน์ใช้ฟอนต์ระบบแทน)
 
 ## 2. ติดตั้ง
 
