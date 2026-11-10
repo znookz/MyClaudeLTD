@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "start": "node bridge/start.mjs",
     "dev": "vite",
     "bridge": "node bridge/server.mjs",
     "build": "tsc --noEmit -p tsconfig.json && vite build",

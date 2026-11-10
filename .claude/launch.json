@@ -4,7 +4,13 @@
     {
       "name": "agent-companion",
       "runtimeExecutable": "cmd",
-      "runtimeArgs": ["/c", "npm", "--prefix", "agent-companion", "run", "dev"],
+      "runtimeArgs": [
+        "/c",
+        "npm",
+        "--prefix",
+        "agent-companion",
+        "start"
+      ],
       "port": 5173
     }
   ]

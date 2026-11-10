@@ -149,6 +149,13 @@ wss.on('connection', (socket) => {
   socket.send(JSON.stringify({ type: 'snapshot', agents: [...agents.values()] }));
 });
 
+// พอร์ตถูกใช้อยู่ = มี bridge อีกตัวเปิดไว้แล้ว → ไม่ต้องล้ม (npm start จะเปิดหน้าเว็บต่อได้)
+server.on('error', (err) => {
+  if (err.code !== 'EADDRINUSE') throw err;
+  console.error(`[bridge] พอร์ต ${PORT} ถูกใช้อยู่ — ใช้ bridge ตัวที่เปิดไว้แล้ว`);
+});
+wss.on('error', () => {}); // ws ส่ง error ของ server ซ้ำมาที่นี่ด้วย
+
 // ผูกกับ 127.0.0.1 เท่านั้น → เครื่องอื่นในเครือข่ายส่ง event ปลอมเข้ามาไม่ได้
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[bridge] ws://localhost:${PORT}  ·  POST http://localhost:${PORT}/hook  ·  author=${DEFAULT_AUTHOR}`);

@@ -81,6 +81,9 @@ npm run dev      # http://localhost:5173
 
 ## 4. ต่อกับ Claude Code จริง
 
+ทางลัด: `npm start` เปิด bridge + หน้าเว็บพร้อมกัน (ถ้ามี bridge เปิดอยู่แล้วจะใช้ตัวเดิม)
+hook ใช้แบบ `async` + `exit 0` เสมอ จึงไม่ทำให้ Claude Code ช้าหรือค้างแม้ bridge ไม่ได้เปิด
+
 1. เปิด `bridge/claude-settings.example.json` แก้ `/ABSOLUTE/PATH/TO/` เป็น path จริงของโปรเจกต์
    (Windows ใช้ `/` ได้ เช่น `node "C:/dev/agent-companion/bridge/hook.mjs"`)
 2. รวมส่วน `"hooks"` เข้าไปใน `~/.claude/settings.json` (ทุกโปรเจกต์) หรือ `.claude/settings.json` (เฉพาะโปรเจกต์)
