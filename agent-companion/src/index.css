@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+/* ฟอนต์รองรับภาษาไทยจากระบบ (ไม่ต้องโหลดจากเน็ต เพราะเป็นแอป Local) */
+@theme {
+  --font-sans: "IBM Plex Sans Thai", "Noto Sans Thai", "Leelawadee UI", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    background: #050810;
+    color: #e2e8f0;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Canvas ของ R3F ต้องเต็มกล่องแม่ */
+  canvas {
+    display: block;
+    touch-action: none;
+  }
+}
+
+/* scrollbar บาง ๆ สำหรับ sidebar */
+aside::-webkit-scrollbar {
+  width: 8px;
+}
+aside::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.08);
+  border-radius: 8px;
+}
