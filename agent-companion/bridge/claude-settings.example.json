@@ -93,6 +93,21 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "/ABSOLUTE/PATH/TO/agent-companion/bridge/hook.mjs"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import {
+  Bot,
   Brain,
+  Check,
   CircleCheck,
   Code,
   FlaskConical,
@@ -21,7 +23,18 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { AGENT_STATUSES, STATUS_META, normalizeEvent, type AgentEvent, type AgentState, type AgentStatus } from '../types';
+import {
+  ACTIVITY_META,
+  AGENT_ACTIVITIES,
+  AGENT_STATUSES,
+  STATUS_META,
+  normalizeEvent,
+  type AgentActivity,
+  type AgentEvent,
+  type AgentState,
+  type AgentStatus,
+} from '../types';
+import { ACTIVITY_ICON } from './activityIcons';
 import type { SocketStatus } from '../hooks/useAgentSocket';
 
 export interface LogEntry {
@@ -57,6 +70,10 @@ interface Props {
   onAddRandom: () => void;
   onClear: () => void;
   onSetStatus: (id: string, s: AgentStatus) => void;
+  onSetActivity: (id: string, a: AgentActivity) => void;
+  /** เรียก sub-agent เพิ่ม 1 ตัว / ให้ sub-agent ตัวที่ทำอยู่เสร็จ 1 ตัว */
+  onSpawnSub: (id: string) => void;
+  onFinishSub: (id: string) => void;
   onToggleTask: (a: AgentState) => void;
   onRemove: (id: string) => void;
   onCustomEvent: (e: AgentEvent) => void;
@@ -81,6 +98,8 @@ const SAMPLE_EVENT = JSON.stringify(
     taskId: 'checkout',
     file: 'src/api/auth.ts',
     status: 'coding',
+    activity: 'writing',
+    tool: 'Edit',
   },
   null,
   2,
@@ -227,9 +246,34 @@ export default function SimulatorPanel(p: Props) {
                     <div className="mt-0.5 truncate text-xs text-slate-400">
                       {a.task}
                       {inCollab && <span className="ml-1.5 text-cyan-300">· กำลังร่วมงาน</span>}
+                      {a.subAgents.length > 0 && (
+                        <span className="ml-1.5 text-fuchsia-300">· sub-agent ×{a.subAgents.length}</span>
+                      )}
                     </div>
                   </button>
                   <div className="flex shrink-0 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => p.onSpawnSub(a.sessionId)}
+                      title="เรียก sub-agent เพิ่ม 1 ตัว"
+                      aria-label="เรียก sub-agent เพิ่ม"
+                      className="flex items-center gap-0.5 rounded-md p-1.5 text-fuchsia-300 hover:bg-fuchsia-500/20"
+                    >
+                      <Bot size={14} />
+                      <Plus size={10} />
+                    </button>
+                    {a.subAgents.some((s) => s.status === 'running') && (
+                      <button
+                        type="button"
+                        onClick={() => p.onFinishSub(a.sessionId)}
+                        title="ให้ sub-agent 1 ตัวทำงานเสร็จ"
+                        aria-label="sub-agent ทำงานเสร็จ"
+                        className="flex items-center gap-0.5 rounded-md p-1.5 text-emerald-300 hover:bg-emerald-500/20"
+                      >
+                        <Bot size={14} />
+                        <Check size={10} />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => p.onToggleTask(a)}
@@ -270,6 +314,32 @@ export default function SimulatorPanel(p: Props) {
                         }}
                       >
                         <Icon size={14} />
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* activity: ท่าทาง/section ที่ hook จริงจะส่งมา (ตามชื่อ tool) */}
+                <div className="mt-1.5 grid grid-cols-6 gap-1">
+                  {AGENT_ACTIVITIES.map((act) => {
+                    const Icon = ACTIVITY_ICON[act];
+                    const m = ACTIVITY_META[act];
+                    const active = a.activity === act;
+                    return (
+                      <button
+                        type="button"
+                        key={act}
+                        title={`${m.label} → ${m.section}`}
+                        aria-label={m.label}
+                        aria-pressed={active}
+                        onClick={() => p.onSetActivity(a.sessionId, act)}
+                        className="flex h-7 items-center justify-center rounded-md border transition"
+                        style={{
+                          borderColor: active ? m.color : 'rgba(255,255,255,0.08)',
+                          background: active ? `${m.color}26` : 'transparent',
+                          color: active ? m.color : '#94a3b8',
+                        }}
+                      >
+                        <Icon size={13} />
                       </button>
                     );
                   })}

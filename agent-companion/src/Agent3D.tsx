@@ -1,12 +1,15 @@
-import { memo, useEffect, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, type ThreeEvent } from '@react-three/fiber';
 import { Html, RoundedBox } from '@react-three/drei';
 import * as THREE from 'three';
-import { FileCode2, User } from 'lucide-react';
+import { Bot, CornerDownRight, FileCode2, MapPin, User } from 'lucide-react';
+import { BodyWear, HeadWear } from './Outfit';
 import SuccessEffect from './SuccessEffect';
-import { STATUS_META, type AgentState } from './types';
+import { ACTIVITY_ICON } from './components/activityIcons';
+import { ACTIVITY_META, STATUS_META, type AgentState } from './types';
 import type { Placement } from './utils/layout';
 import { DOOR, POIS, claimPoi, findPath, releasePoi, type Vec3 } from './utils/office';
+import { HAT_LIFT, type Outfit } from './utils/outfits';
 import { authorColor } from './utils/people';
 import { registerAnchors, unregisterAnchors } from './utils/registry';
 import { getSpeakerLevel, releaseSpeaker } from './utils/sound';
@@ -14,11 +17,23 @@ import { getSpeakerLevel, releaseSpeaker } from './utils/sound';
 interface Agent3DProps {
   agent: AgentState;
   placement: Placement;
+  /** ชุดแต่งตัวประจำตัว (แต่ละ session ไม่ซ้ำกัน) */
+  outfit: Outfit;
   selected: boolean;
   /** จางลงเมื่อไม่ตรงกับตัวกรองสถานะ */
   dimmed?: boolean;
   onSelect: (sessionId: string) => void;
+  /** หุ่นจิ๋ว = sub-agent ของตัวอื่น: ตัวเล็ก, ป้ายย่อ, โผล่ออกมาจากตัวแม่ */
+  mini?: boolean;
+  /** ชนิดของ sub-agent (แสดงบนป้ายของหุ่นจิ๋ว) */
+  subType?: string;
+  /** จุดเกิด (ไม่ระบุ = เดินเข้ามาจากประตูห้อง) */
+  spawnAt?: Vec3;
+  /** คลิกแล้วเลือก session ไหน (หุ่นจิ๋ว → เลือกตัวแม่) */
+  selectId?: string;
 }
+
+const MINI_SCALE = 0.56;
 
 const { damp, lerp } = THREE.MathUtils;
 const BODY_Y = 1.17;
@@ -27,6 +42,9 @@ const DIM_OPACITY = 0.2;
 const WALK_SPEED = 1.7; // หน่วย/วินาที
 const STRIDE_RATE = 5.2; // เฟสก้าวเดิน (rad) ต่อหน่วยระยะทาง
 const SIT_DROP = 0.3; // ตัวลดลงเท่าไรตอนนั่ง
+const LEAVE_MS = 5 * 60_000; // สำเร็จค้างไว้นานเท่านี้ แล้วเดินออกจากห้องไป
+const EXIT_DEST = { position: DOOR.spawn, lookAt: null, pose: 'stand' } as const;
+const CELEBRATE_MS = 60_000; // ฉลองความสำเร็จนานเท่านี้ แล้วกลับไปยืนท่าสแตนด์บาย (ป้ายยังเป็น "สำเร็จ")
 
 interface Dest {
   position: Vec3;
@@ -34,15 +52,51 @@ interface Dest {
   pose: 'sit' | 'stand';
 }
 
+// แผงโฮโลแกรมข้างตัว (อ่านโค้ด / รันคำสั่ง): เส้นข้อความ 5 บรรทัด ความกว้างตั้งต้นของแต่ละบรรทัด
+const HOLO_LINES = [0.5, 0.38, 0.46, 0.3, 0.42];
+
 const easeOutBack = (x: number) => {
   const c1 = 1.70158;
   const c3 = c1 + 1;
   return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
 };
 
-function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent3DProps) {
-  const { sessionId, status } = agent;
+function Agent3D({
+  agent,
+  placement,
+  outfit,
+  selected,
+  dimmed = false,
+  onSelect,
+  mini = false,
+  subType,
+  spawnAt,
+  selectId,
+}: Agent3DProps) {
+  const { sessionId, status, activity } = agent;
   const statusColor = STATUS_META[status].color;
+  // สำเร็จครบ ~1 นาทีแล้ว: สถานะ/สี/ป้ายยังเป็น success แต่ท่าทางกลับเป็นแบบสแตนด์บาย
+  const [settled, setSettled] = useState(false);
+  // สำเร็จครบ ~5 นาที: เดินออกประตูห้องไป (leaving) → ถึงประตูแล้วหายตัว (gone); มีงานใหม่ก็เดินกลับเข้ามา
+  const [leaving, setLeaving] = useState(false);
+  const [gone, setGone] = useState(false);
+  useEffect(() => {
+    setSettled(false);
+    setLeaving(false);
+    setGone(false);
+    if (status !== 'success') return;
+    const settleTimer = setTimeout(() => setSettled(true), CELEBRATE_MS);
+    const leaveTimer = setTimeout(() => setLeaving(true), LEAVE_MS);
+    return () => {
+      clearTimeout(settleTimer);
+      clearTimeout(leaveTimer);
+    };
+  }, [status]);
+  const pose = status === 'success' && settled ? 'idle' : status;
+  // ฉลองเสร็จแล้วก็เดินเล่นในห้องได้เหมือนตอนสแตนด์บาย
+  const wander = !leaving && (placement.wander || (status === 'success' && settled && !placement.groupKey));
+  const activityMeta = ACTIVITY_META[activity];
+  const ActivityIcon = ACTIVITY_ICON[activity];
   const accent = useMemo(() => authorColor(agent.author), [agent.author]);
 
   // ---------- refs ของชิ้นส่วนที่ต้องขยับทุกเฟรม ----------
@@ -67,6 +121,23 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
   const rightKnee = useRef<THREE.Group>(null);
   const statusLightMat = useRef<THREE.MeshStandardMaterial>(null);
   const glowLight = useRef<THREE.PointLight>(null);
+  // อุปกรณ์ประกอบท่าทางของ activity ต่าง ๆ
+  const holo = useRef<THREE.Group>(null);
+  const holoMat = useRef<THREE.MeshBasicMaterial>(null);
+  // เส้นข้อความทุกบรรทัดใช้ material ร่วมกัน (เปลี่ยนสีตาม activity ครั้งเดียว)
+  const holoBarMaterial = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: '#60a5fa', transparent: true, opacity: 0.85, depthWrite: false }),
+    [],
+  );
+  useEffect(() => () => holoBarMaterial.dispose(), [holoBarMaterial]);
+  const holoBars = useRef<(THREE.Mesh | null)[]>([]);
+  const magnifier = useRef<THREE.Group>(null);
+  const cue = useRef<THREE.Group>(null);
+  const gamepad = useRef<THREE.Mesh>(null);
+  const globe = useRef<THREE.Group>(null);
+  const pingRing = useRef<THREE.Mesh>(null);
+  const pingMat = useRef<THREE.MeshBasicMaterial>(null);
+  const holoColor = useMemo(() => new THREE.Color(), []);
 
   // ---------- state ภายในที่ไม่ต้อง re-render ----------
   const anim = useRef({
@@ -104,7 +175,8 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
 
   // ตำแหน่งเกิด: หน้าประตูห้อง → เดินเข้ามาหาโต๊ะ (เลื่อนเล็กน้อยตามลำดับ ไม่ให้ซ้อนกัน)
   const spawnPosition = useMemo<[number, number, number]>(
-    () => [DOOR.spawn[0], 0, DOOR.spawn[2] + (Math.random() - 0.5) * 0.4],
+    () => (spawnAt ? [spawnAt[0], 0, spawnAt[2]] : [DOOR.spawn[0], 0, DOOR.spawn[2] + (Math.random() - 0.5) * 0.4]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ใช้ค่าตอน mount เท่านั้น
     [],
   );
 
@@ -137,16 +209,16 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
         mat.needsUpdate = true;
       }
     });
-  }, [dimmed, status]);
+  }, [dimmed, status, outfit]);
 
   // ออกจาก success แล้ว: ห่อมุมหมุนสะสมกลับมาอยู่ใน [-π, π] เพื่อไม่ให้หมุนย้อนหลายรอบ
   useEffect(() => {
-    if (status !== 'success' && body.current) {
+    if (pose !== 'success' && body.current) {
       const r = body.current.rotation.y % TWO_PI;
       body.current.rotation.y = r > Math.PI ? r - TWO_PI : r < -Math.PI ? r + TWO_PI : r;
     }
     anim.current.spin = body.current?.rotation.y ?? 0;
-  }, [status]);
+  }, [pose]);
 
   useFrame((state, rawDelta) => {
     const dt = Math.min(rawDelta, 0.05); // กันกระตุกตอนสลับแท็บ
@@ -155,14 +227,14 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     if (!root.current || !body.current || !head.current) return;
 
     // ===== 1) Spawn: ขยายตัวแบบเด้ง =====
-    if (a.spawnT < 1) {
+    if (!leaving && a.spawnT < 1) {
       a.spawnT = Math.min(1, a.spawnT + dt * 1.4);
       spawn.current?.scale.setScalar(Math.max(0.001, easeOutBack(a.spawnT)));
     }
 
     // ===== 2) เลือกจุดหมาย: ปกติตาม placement; ถ้าว่างอยู่ (idle) จะเดินเล่นไปจุดต่าง ๆ ในห้อง =====
     const pos = root.current.position;
-    if (!placement.wander) {
+    if (!wander) {
       if (a.poi >= 0) {
         releasePoi(sessionId);
         a.poi = -1;
@@ -170,7 +242,10 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
       a.wanderDest = null;
       a.leaveAt = 0;
     } else {
-      if (a.wanderDest && a.arrived && a.leaveAt === 0) a.leaveAt = t + 4 + Math.random() * 6; // ยืนอยู่สักพัก
+      if (a.wanderDest && a.arrived && a.leaveAt === 0) {
+        // ยืนอยู่สักพัก (ในห้องพักผ่อนเล่นนานกว่า)
+        a.leaveAt = t + (a.poi >= 0 && POIS[a.poi].lounge ? 12 + Math.random() * 14 : 4 + Math.random() * 6);
+      }
       if (a.wanderDest && a.arrived && t >= a.leaveAt) {
         releasePoi(sessionId);
         a.poi = -1;
@@ -189,7 +264,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
         }
       }
     }
-    const dest: Dest = placement.wander && a.wanderDest ? a.wanderDest : placement;
+    const dest: Dest = leaving ? EXIT_DEST : wander && a.wanderDest ? a.wanderDest : placement;
 
     // ===== 3) เดินตามเส้นทาง (A* เลี่ยงเฟอร์นิเจอร์) ด้วยความเร็วคงที่ =====
     const destKey = `${dest.position[0].toFixed(2)},${dest.position[2].toFixed(2)}`;
@@ -221,6 +296,12 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     } else {
       a.arrived = true;
     }
+    // ถึงประตูแล้ว: หดตัวหายออกจากห้อง
+    if (leaving && a.arrived && a.spawnT > 0) {
+      a.spawnT = Math.max(0, a.spawnT - dt * 2.5);
+      spawn.current?.scale.setScalar(Math.max(0.001, a.spawnT));
+      if (a.spawnT === 0) setGone(true);
+    }
     a.walk = damp(a.walk, moving ? 1 : 0, 10, dt);
     const walk = a.walk;
     // นั่งเมื่อถึงเก้าอี้แล้วเท่านั้น (ระหว่างเดินยังยืน)
@@ -245,36 +326,88 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     let bodyYaw = 0;
     let headTiltZ = 0;
     let headPitch = 0;
+    let headYaw = 0;
     let lx = 0.15, lz = -0.12, rx = 0.15, rz = 0.12; // แขนซ้าย/ขวา (rotation x, z)
     let shakeX = 0;
     let shakeRoll = 0;
 
-    switch (status) {
+    switch (pose) {
       case 'idle':
         bobAmp = 0.012; // หายใจเบา ๆ (ยืนบนพื้นแล้ว ไม่ลอย)
         bobSpeed = 1.6;
         bodyYaw = Math.sin(t * 0.55) * 0.3;
         lx = Math.sin(t * 1.2) * 0.12;
         rx = -Math.sin(t * 1.2) * 0.12;
+        if (activity === 'waiting') {
+          // รออนุญาต/รอ input: ยกมือขวาโบกเรียกให้คนมาดู
+          bodyYaw = 0;
+          headPitch = -0.12;
+          headTiltZ = -0.1;
+          rx = 0;
+          rz = 2.45 + Math.sin(t * 7) * 0.32;
+        }
         break;
       case 'thinking':
         bobAmp = 0.01;
         bobSpeed = 1;
         headTiltZ = 0.3 + Math.sin(t * 0.8) * 0.05;
         headPitch = -0.08;
-        // แขนขวาชูขึ้นมาจับคาง
+        // planning (ค่าเริ่มต้น): แขนขวาชูขึ้นมาจับคาง
         rx = -2.25;
         rz = -0.75;
+        if (activity === 'reading') {
+          // ถือเอกสาร: ก้มหน้า กวาดสายตาซ้าย-ขวาช้า ๆ
+          headTiltZ = 0;
+          headPitch = 0.34;
+          headYaw = Math.sin(t * 1.3) * 0.28;
+          lx = -1.2;
+          rx = -1.2;
+          lz = 0.4;
+          rz = -0.4;
+        } else if (activity === 'searching') {
+          // ส่องแว่นขยาย: แขนขวายื่นไปข้างหน้า กวาดหัวหาเป้าหมาย
+          headTiltZ = 0;
+          headPitch = 0.12;
+          headYaw = Math.sin(t * 2.4) * 0.45;
+          rx = -1.75 + Math.sin(t * 3.1) * 0.12;
+          rz = -0.12;
+          lx = 0.1;
+          lz = -0.2;
+        } else if (activity === 'web') {
+          // ท่องเว็บ: ชี้ไปที่ลูกโลกข้างตัวแล้วเงยหน้ามอง
+          bobSpeed = 1.6;
+          headTiltZ = -0.12;
+          headPitch = -0.14;
+          headYaw = 0.35 + Math.sin(t * 1.1) * 0.08;
+          rx = -1.95 + Math.sin(t * 2.2) * 0.1;
+          rz = -0.5;
+          lx = 0.1;
+          lz = -0.2;
+        } else if (activity === 'delegating') {
+          // สั่งงาน sub-agent: ชี้นิ้วออกไป อีกมือโบกสั่ง ตัวหันกวาดช้า ๆ
+          bobSpeed = 1.8;
+          headTiltZ = 0;
+          headPitch = -0.05;
+          bodyYaw = Math.sin(t * 0.9) * 0.5;
+          rx = -1.55 + Math.sin(t * 4) * 0.14;
+          rz = -0.55;
+          lx = -0.7 + Math.sin(t * 3) * 0.3;
+          lz = -0.7;
+        }
         break;
       case 'coding': {
         bobAmp = 0.008;
         bobSpeed = 2.5;
         headPitch = 0.22; // ก้มมองคีย์บอร์ด
-        const type = (phase: number) => Math.sin(t * 28 + phase) * 0.14 + Math.sin(t * 17 + phase * 2) * 0.06;
+        // running: พิมพ์เป็นช่วง ๆ (พิมพ์คำสั่ง → รอผล) ส่วน writing พิมพ์รัวต่อเนื่อง
+        const burst = activity === 'running' ? (Math.sin(t * 1.6) > -0.15 ? 1 : 0.12) : 1;
+        const type = (phase: number) =>
+          (Math.sin(t * 28 + phase) * 0.14 + Math.sin(t * 17 + phase * 2) * 0.06) * burst;
         lx = -1.15 + type(0);
         rx = -1.15 + type(Math.PI);
         lz = 0.3;
         rz = -0.3;
+        if (activity === 'running') headPitch = 0.12 + (burst < 1 ? -0.08 : 0); // เงยหน้าดูผลตอนรอ
         break;
       }
       case 'testing':
@@ -302,6 +435,57 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
         break;
     }
 
+    // ===== 5.1) ท่าเล่นในห้องพักผ่อน (ถึงจุดแล้วเท่านั้น และยังว่างอยู่) =====
+    const act = pose === 'idle' && wander && a.wanderDest && a.arrived && a.poi >= 0 ? POIS[a.poi].act : undefined;
+    let lean = 0; // เอนตัวไปข้างหน้า
+    let buzz = 0; // สั่นเบา ๆ (เก้าอี้นวด)
+    let cueSlide = 0;
+    if (act === 'arcade') {
+      // ตู้เกม: มือซ้ายโยกจอยสติ๊ก มือขวากดปุ่มรัว
+      bodyYaw = Math.sin(t * 2.3) * 0.07;
+      headPitch = 0.08;
+      lx = -1.05 + Math.sin(t * 6) * 0.1;
+      lz = 0.28 + Math.sin(t * 4.3) * 0.12;
+      rx = -1.05 + (Math.sin(t * 21) > 0.2 ? -0.16 : 0);
+      rz = -0.28;
+    } else if (act === 'pool') {
+      // โต๊ะพูล: ก้มเล็ง มือซ้ายวางเป็นสะพาน มือขวาชักไม้คิวไปมา
+      const s = Math.sin(t * 2.4);
+      cueSlide = s;
+      lean = 0.42;
+      bodyYaw = 0;
+      headPitch = -0.3;
+      lx = -1.35;
+      lz = 0.32;
+      rx = 0.4 - s * 0.26;
+      rz = 0.04;
+    } else if (act === 'console') {
+      // เกมคอนโซล: นั่งถือจอยสองมือ เอนตัวตามเกม
+      bodyYaw = Math.sin(t * 1.3) * 0.1;
+      headPitch = 0.04;
+      lx = -0.95 + Math.sin(t * 15) * 0.04;
+      rx = -0.95 + Math.sin(t * 19 + 1) * 0.05;
+      lz = 0.42;
+      rz = -0.42;
+    } else if (act === 'massage') {
+      // เก้าอี้นวด: เอนหลัง เงยหน้า วางแขนบนที่พักแขน ตัวสั่นเบา ๆ
+      bodyYaw = 0;
+      headPitch = -0.26;
+      headTiltZ = Math.sin(t * 0.7) * 0.06;
+      lx = -0.85;
+      rx = -0.85;
+      lz = -0.12;
+      rz = 0.12;
+      buzz = Math.sin(t * 46) * 0.01;
+      bobAmp = 0.02;
+      bobSpeed = 9;
+    } else if (act === 'sofa') {
+      bodyYaw = Math.sin(t * 0.4) * 0.12;
+      headPitch = -0.1;
+      lx = -0.35;
+      rx = -0.35;
+    }
+
     // ระหว่างเดิน: ไม่ส่ายตัว, แขนแกว่งสลับกับขา
     bodyYaw *= 1 - walk;
     lx = lx * (1 - walk) + -Math.sin(a.phase) * 0.55 * walk;
@@ -310,17 +494,18 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     rz = rz * (1 - walk) + 0.1 * walk;
 
     const b = body.current;
-    const hop = status === 'success' ? Math.abs(Math.sin(t * 4.5)) * 0.35 : 0;
+    const hop = pose === 'success' ? Math.abs(Math.sin(t * 4.5)) * 0.35 : 0;
     const stepBob = Math.abs(Math.sin(a.phase)) * 0.05 * walk;
     const targetY = BODY_Y - SIT_DROP * sit + stepBob + Math.sin(t * bobSpeed) * bobAmp + hop;
     b.position.y = damp(b.position.y, targetY, 14, dt);
-    b.position.x = status === 'error' ? shakeX : damp(b.position.x, 0, 10, dt);
-    b.rotation.x = damp(b.rotation.x, 0.09 * walk, 8, dt); // เอนตัวไปข้างหน้าตอนเดิน
+    b.position.x = status === 'error' ? shakeX : buzz !== 0 ? buzz : damp(b.position.x, 0, 10, dt);
+    b.rotation.x = damp(b.rotation.x, 0.09 * walk + lean * (1 - walk), 8, dt); // เอนตัวไปข้างหน้าตอนเดิน / ก้มเล็งพูล
     b.rotation.z = status === 'error' ? shakeRoll : damp(b.rotation.z, 0, 10, dt);
-    b.rotation.y = status === 'success' ? a.spin : damp(b.rotation.y, bodyYaw, 5, dt);
+    b.rotation.y = pose === 'success' ? a.spin : damp(b.rotation.y, bodyYaw, 5, dt);
 
     head.current.rotation.z = damp(head.current.rotation.z, headTiltZ, 6, dt);
     head.current.rotation.x = damp(head.current.rotation.x, headPitch, 6, dt);
+    head.current.rotation.y = damp(head.current.rotation.y, headYaw, 6, dt);
 
     // แขนตอนพิมพ์ต้องตอบสนองไว (λ สูง) ไม่งั้นการสั่นจะถูก damp จนเรียบ
     const armLambda = status === 'coding' || status === 'error' ? 30 : walk > 0.3 ? 14 : 7;
@@ -345,7 +530,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
 
     // ===== 6) อุปกรณ์ประกอบตามสถานะ =====
     if (halo.current) {
-      halo.current.visible = status === 'thinking';
+      halo.current.visible = status === 'thinking' && activity === 'planning';
       halo.current.rotation.z += dt * 9;
       halo.current.position.y = 0.58 + Math.sin(t * 3) * 0.03;
     }
@@ -358,6 +543,51 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
       keyboard.current.visible = status === 'coding' && sit < 0.5; // นั่งโต๊ะแล้วมีคีย์บอร์ดจริง
       const m = (keyboard.current.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
       m.opacity = 0.22 + Math.sin(t * 12) * 0.06 + Math.random() * 0.04;
+    }
+
+    // แผงโฮโลแกรม: reading = เอกสารที่เส้นไฮไลต์ไล่ลงมา, running = เทอร์มินัลที่พิมพ์ทีละบรรทัด
+    if (holo.current) {
+      const showHolo = activity === 'reading' || activity === 'running';
+      const k = damp(holo.current.scale.x, showHolo ? 1 : 0.001, 9, dt);
+      holo.current.scale.setScalar(k);
+      holo.current.visible = k > 0.02;
+      if (showHolo) {
+        holo.current.position.y = 0.42 + Math.sin(t * 1.8) * 0.03;
+        holoColor.set(ACTIVITY_META[activity].color);
+        holoMat.current?.color.copy(holoColor);
+        holoBarMaterial.color.copy(holoColor);
+        const cycle = (t * 1.6) % 7; // running: บรรทัดที่ i เริ่มโตเมื่อ cycle > i
+        const cursor = Math.floor(t * 1.4) % HOLO_LINES.length; // reading: บรรทัดที่กำลังอ่าน
+        holoBars.current.forEach((bar, i) => {
+          if (!bar) return;
+          const w =
+            activity === 'running'
+              ? HOLO_LINES[i] * THREE.MathUtils.clamp(cycle - i, 0, 1)
+              : HOLO_LINES[i] * (i === cursor ? 1 : 0.8);
+          bar.scale.set(Math.max(w, 0.001), i === cursor && activity === 'reading' ? 1.9 : 1, 1);
+          bar.position.x = -0.3 + w / 2;
+        });
+      }
+    }
+    if (magnifier.current) magnifier.current.visible = activity === 'searching';
+    if (cue.current) {
+      cue.current.visible = act === 'pool';
+      cue.current.position.z = 0.42 + cueSlide * 0.16;
+    }
+    if (gamepad.current) gamepad.current.visible = act === 'console';
+    if (globe.current) {
+      globe.current.visible = activity === 'web';
+      globe.current.rotation.y += dt * 1.8;
+      globe.current.position.y = 0.78 + Math.sin(t * 2) * 0.05;
+    }
+    if (pingRing.current && pingMat.current) {
+      const delegating = activity === 'delegating';
+      pingRing.current.visible = delegating;
+      if (delegating) {
+        const f = (t * 0.9) % 1; // วงสัญญาณขยายออกจากเสาอากาศ แล้วจางหาย
+        pingRing.current.scale.setScalar(0.35 + f * 1.5);
+        pingMat.current.opacity = (1 - f) * 0.9;
+      }
     }
 
     // ไฟสถานะ: error กะพริบถี่, อื่น ๆ หายใจช้า ๆ
@@ -380,7 +610,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
     }
     const blinkPhase = (t - a.blinkStart) / 0.14;
     const blink = blinkPhase >= 0 && blinkPhase < 1 ? 0.1 + Math.abs(blinkPhase * 2 - 1) * 0.9 : 1;
-    const mood = status === 'success' ? 0.45 : status === 'error' ? 0.6 : 1; // ยิ้มตาหยี / ตาหรี่
+    const mood = pose === 'success' ? 0.45 : status === 'error' ? 0.6 : act === 'massage' ? 0.22 : 1; // ยิ้มตาหยี / ตาหรี่ / หลับตาพริ้ม
     const eyeScale = blink * mood * (1 + level * 0.3);
     if (eyeL.current && eyeR.current) {
       eyeL.current.scale.y = eyeScale;
@@ -391,15 +621,19 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
 
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
-    onSelect(sessionId);
+    onSelect(selectId ?? sessionId);
   };
 
   const metal = { color: '#e8ecf3', metalness: 0.35, roughness: 0.32 } as const;
+  // ผ้า: ด้านกว่าโลหะของตัวหุ่น
+  const cloth = { metalness: 0.05, roughness: 0.75 } as const;
+  const antennaLift = HAT_LIFT[outfit.hat];
 
   return (
     <group
       ref={root}
       position={spawnPosition}
+      scale={mini ? MINI_SCALE : 1}
       onClick={handleClick}
       onPointerOver={(e) => {
         e.stopPropagation();
@@ -413,16 +647,9 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
         <group ref={body} position={[0, BODY_Y, 0]}>
           {/* ---------- ลำตัว ---------- */}
           <RoundedBox args={[0.78, 0.82, 0.56]} radius={0.14} smoothness={4} castShadow>
-            <meshStandardMaterial {...metal} />
+            <meshStandardMaterial color={outfit.top} {...cloth} />
           </RoundedBox>
-          <mesh position={[0, 0.12, 0.285]}>
-            <boxGeometry args={[0.34, 0.12, 0.02]} />
-            <meshStandardMaterial color={statusColor} emissive={statusColor} emissiveIntensity={1.5} toneMapped={false} />
-          </mesh>
-          <mesh position={[0, -0.12, 0.285]}>
-            <boxGeometry args={[0.5, 0.04, 0.02]} />
-            <meshStandardMaterial color={accent} />
-          </mesh>
+          <BodyWear outfit={outfit} />
           {/* เอว */}
           <mesh position={[0, -0.4, 0]}>
             <cylinderGeometry args={[0.3, 0.26, 0.08, 20]} />
@@ -432,7 +659,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
           {([-1, 1] as const).map((side) => (
             <group key={side} ref={side < 0 ? leftHip : rightHip} position={[side * 0.2, -0.38, 0]}>
               <RoundedBox args={[0.17, 0.4, 0.17]} radius={0.07} position={[0, -0.18, 0]} castShadow>
-                <meshStandardMaterial {...metal} />
+                <meshStandardMaterial color={outfit.pants} {...cloth} />
               </RoundedBox>
               <group ref={side < 0 ? leftKnee : rightKnee} position={[0, -0.36, 0]}>
                 <mesh>
@@ -440,10 +667,14 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
                   <meshStandardMaterial color="#94a3b8" metalness={0.5} roughness={0.3} />
                 </mesh>
                 <RoundedBox args={[0.15, 0.4, 0.15]} radius={0.06} position={[0, -0.19, 0]} castShadow>
-                  <meshStandardMaterial {...metal} />
+                  {outfit.shorts ? (
+                    <meshStandardMaterial {...metal} />
+                  ) : (
+                    <meshStandardMaterial color={outfit.pants} {...cloth} />
+                  )}
                 </RoundedBox>
                 <RoundedBox args={[0.2, 0.08, 0.32]} radius={0.03} position={[0, -0.4, 0.06]} castShadow>
-                  <meshStandardMaterial color={accent} metalness={0.3} roughness={0.5} />
+                  <meshStandardMaterial color={outfit.shoes} metalness={0.2} roughness={0.55} />
                 </RoundedBox>
               </group>
             </group>
@@ -479,26 +710,29 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
                 <meshStandardMaterial color={accent} metalness={0.4} roughness={0.4} />
               </mesh>
             ))}
-            {/* เสาอากาศ + ไฟสถานะ */}
-            <mesh position={[0, 0.45, 0]}>
-              <cylinderGeometry args={[0.02, 0.02, 0.22, 8]} />
-              <meshStandardMaterial color="#94a3b8" />
-            </mesh>
-            <mesh position={[0, 0.6, 0]}>
-              <sphereGeometry args={[0.075, 16, 16]} />
-              <meshStandardMaterial
-                ref={statusLightMat}
-                color={statusColor}
-                emissive={statusColor}
-                emissiveIntensity={2}
-                toneMapped={false}
-              />
-            </mesh>
-            {/* Halo วงแหวนความคิด */}
-            <mesh ref={halo} position={[0, 0.58, 0]} rotation={[Math.PI / 2, 0, 0]} visible={false}>
-              <torusGeometry args={[0.42, 0.025, 8, 48, Math.PI * 1.6]} />
-              <meshStandardMaterial color="#c084fc" emissive="#a855f7" emissiveIntensity={3} toneMapped={false} />
-            </mesh>
+            <HeadWear outfit={outfit} />
+            {/* เสาอากาศ + ไฟสถานะ (ยกขึ้นตามความสูงหมวก ให้ไฟโผล่พ้นหมวกเสมอ) */}
+            <group position={[0, antennaLift, 0]}>
+              <mesh position={[0, 0.45 - antennaLift / 2, 0]}>
+                <cylinderGeometry args={[0.02, 0.02, 0.22 + antennaLift, 8]} />
+                <meshStandardMaterial color="#94a3b8" />
+              </mesh>
+              <mesh position={[0, 0.6, 0]}>
+                <sphereGeometry args={[0.075, 16, 16]} />
+                <meshStandardMaterial
+                  ref={statusLightMat}
+                  color={statusColor}
+                  emissive={statusColor}
+                  emissiveIntensity={2}
+                  toneMapped={false}
+                />
+              </mesh>
+              {/* Halo วงแหวนความคิด */}
+              <mesh ref={halo} position={[0, 0.58, 0]} rotation={[Math.PI / 2, 0, 0]} visible={false}>
+                <torusGeometry args={[0.42, 0.025, 8, 48, Math.PI * 1.6]} />
+                <meshStandardMaterial color="#c084fc" emissive="#a855f7" emissiveIntensity={3} toneMapped={false} />
+              </mesh>
+            </group>
           </group>
 
           {/* ---------- ไหล่ (anchor ของ CollabBeam) + แขน ---------- */}
@@ -509,7 +743,7 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
                 <meshStandardMaterial color={accent} />
               </mesh>
               <RoundedBox args={[0.16, 0.5, 0.16]} radius={0.07} position={[0, -0.3, 0]}>
-                <meshStandardMaterial {...metal} />
+                <meshStandardMaterial color={outfit.sleeve} {...cloth} />
               </RoundedBox>
               <mesh position={[0, -0.6, 0]}>
                 <sphereGeometry args={[0.1, 16, 16]} />
@@ -524,14 +758,47 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
                 <meshStandardMaterial color={accent} />
               </mesh>
               <RoundedBox args={[0.16, 0.5, 0.16]} radius={0.07} position={[0, -0.3, 0]}>
-                <meshStandardMaterial {...metal} />
+                <meshStandardMaterial color={outfit.sleeve} {...cloth} />
               </RoundedBox>
               <mesh position={[0, -0.6, 0]}>
                 <sphereGeometry args={[0.1, 16, 16]} />
                 <meshStandardMaterial color="#cbd5e1" metalness={0.5} roughness={0.3} />
               </mesh>
+              {/* แว่นขยาย (searching): อยู่ปลายแขนขวา วงเลนส์หันไปทางที่แขนชี้ */}
+              <group ref={magnifier} visible={false}>
+                <mesh position={[0, -0.7, 0]}>
+                  <cylinderGeometry args={[0.022, 0.022, 0.18, 8]} />
+                  <meshStandardMaterial color="#64748b" metalness={0.6} roughness={0.3} />
+                </mesh>
+                <mesh position={[0, -0.92, 0]} rotation={[Math.PI / 2, 0, 0]}>
+                  <torusGeometry args={[0.17, 0.028, 10, 32]} />
+                  <meshStandardMaterial color="#5eead4" emissive="#2dd4bf" emissiveIntensity={2.2} toneMapped={false} />
+                </mesh>
+                <mesh position={[0, -0.92, 0]} rotation={[Math.PI / 2, 0, 0]}>
+                  <circleGeometry args={[0.16, 24]} />
+                  <meshBasicMaterial color="#99f6e4" transparent opacity={0.25} side={THREE.DoubleSide} depthWrite={false} />
+                </mesh>
+              </group>
             </group>
           </group>
+
+          {/* ---------- ไม้คิว (เล่นพูลในห้องพักผ่อน): ขยับไป-กลับตามจังหวะแทง ---------- */}
+          <group ref={cue} position={[0.5, -0.3, 0.42]} rotation={[-0.28, 0, 0]} visible={false}>
+            <mesh rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.012, 0.024, 1.5, 8]} />
+              <meshStandardMaterial color="#d6a05c" roughness={0.5} />
+            </mesh>
+            <mesh position={[0, 0, 0.76]} rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.013, 0.013, 0.04, 8]} />
+              <meshStandardMaterial color="#60a5fa" />
+            </mesh>
+          </group>
+
+          {/* ---------- จอยเกม (เล่นคอนโซลในห้องพักผ่อน) ---------- */}
+          <mesh ref={gamepad} position={[0, -0.12, 0.5]} rotation={[-0.5, 0, 0]} visible={false}>
+            <boxGeometry args={[0.36, 0.07, 0.16]} />
+            <meshStandardMaterial color="#1f2937" emissive="#a78bfa" emissiveIntensity={0.5} roughness={0.5} />
+          </mesh>
 
           {/* ---------- คีย์บอร์ดโฮโลแกรม (coding) ---------- */}
           <group ref={keyboard} position={[0, -0.18, 0.62]} rotation={[-1.05, 0, 0]} visible={false}>
@@ -552,6 +819,52 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
             </mesh>
           </group>
 
+          {/* ---------- แผงโฮโลแกรมข้างตัว (reading = เอกสาร, running = เทอร์มินัล) ---------- */}
+          <group ref={holo} position={[-1.0, 0.42, 0.35]} rotation={[0, 0.35, 0]} scale={0.001} visible={false}>
+            <mesh>
+              <planeGeometry args={[0.8, 0.6]} />
+              <meshBasicMaterial
+                ref={holoMat}
+                color="#60a5fa"
+                transparent
+                opacity={0.16}
+                side={THREE.DoubleSide}
+                blending={THREE.AdditiveBlending}
+                depthWrite={false}
+              />
+            </mesh>
+            {HOLO_LINES.map((w, i) => (
+              <mesh
+                key={i}
+                ref={(m) => {
+                  holoBars.current[i] = m;
+                }}
+                position={[-0.3 + w / 2, 0.2 - i * 0.092, 0.005]}
+                material={holoBarMaterial}
+              >
+                <planeGeometry args={[1, 0.04]} />
+              </mesh>
+            ))}
+          </group>
+
+          {/* ---------- ลูกโลก (web) ---------- */}
+          <group ref={globe} position={[1.0, 0.78, 0.4]} visible={false}>
+            <mesh>
+              <sphereGeometry args={[0.26, 16, 12]} />
+              <meshBasicMaterial color="#22d3ee" wireframe transparent opacity={0.8} />
+            </mesh>
+            <mesh>
+              <sphereGeometry args={[0.24, 16, 12]} />
+              <meshBasicMaterial color="#0e7490" transparent opacity={0.35} depthWrite={false} />
+            </mesh>
+          </group>
+
+          {/* ---------- วงสัญญาณเหนือเสาอากาศ (delegating) ---------- */}
+          <mesh ref={pingRing} position={[0, 1.42, 0]} rotation={[Math.PI / 2, 0, 0]} visible={false}>
+            <torusGeometry args={[0.5, 0.02, 8, 48]} />
+            <meshBasicMaterial ref={pingMat} color="#e879f9" transparent opacity={0.8} depthWrite={false} />
+          </mesh>
+
           {/* ---------- วงแหวนสแกน (testing) ---------- */}
           <mesh ref={scanRing} rotation={[Math.PI / 2, 0, 0]} visible={false}>
             <torusGeometry args={[0.85, 0.018, 8, 64]} />
@@ -561,17 +874,40 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
       </group>
 
       {/* วงเลือก (ไม่หมุนตามตัว) */}
-      {selected && (
+      {selected && !gone && (
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
           <ringGeometry args={[0.75, 0.82, 48]} />
           <meshBasicMaterial color="#e2e8f0" transparent opacity={0.7} />
         </mesh>
       )}
 
-      {status === 'success' && <SuccessEffect />}
+      {pose === 'success' && <SuccessEffect />}
 
       {/* ---------- 3D HUD ---------- */}
-      <Html position={[0, 3.05, 0]} center distanceFactor={9} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
+      <Html
+        position={[0, 3.05 + antennaLift * 0.6, 0]}
+        center
+        distanceFactor={9}
+        zIndexRange={[20, 0]}
+        style={{ pointerEvents: 'none', display: gone ? 'none' : undefined }}
+      >
+        {mini ? (
+          /* ป้ายย่อของ sub-agent: ชนิด + งานที่ได้รับมอบหมาย */
+          <div
+            className="w-44 select-none rounded-lg border bg-slate-950/85 px-2.5 py-1.5 text-[11px] leading-snug text-slate-200 shadow-lg backdrop-blur"
+            style={{ borderColor: '#e879f9', opacity: dimmed ? 0.25 : 1, transition: 'opacity 0.25s' }}
+          >
+            <div className="flex items-center gap-1.5 font-semibold text-fuchsia-300">
+              <CornerDownRight size={11} className="shrink-0" />
+              <span className="truncate">{subType || 'sub-agent'}</span>
+              <span
+                className="ml-auto h-2 w-2 shrink-0 rounded-full animate-pulse"
+                style={{ background: statusColor }}
+              />
+            </div>
+            {agent.task && <div className="mt-0.5 truncate text-slate-300">{agent.task}</div>}
+          </div>
+        ) : (
         <div
           className="w-60 select-none rounded-xl border bg-slate-950/85 px-3 py-2 text-[11px] leading-snug text-slate-200 shadow-xl backdrop-blur"
           style={{
@@ -592,6 +928,18 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
             <span className="font-mono text-[10px] text-slate-400">{sessionId.slice(0, 8)}</span>
           </div>
           <div className="mt-1 truncate text-[12.5px] font-semibold text-white">{agent.task || '—'}</div>
+          {/* section: ตอนนี้ทำงานอยู่ในส่วนไหนของห้อง + กำลังทำอะไร (มาจาก tool ใน hook) */}
+          <div
+            className="mt-1.5 flex items-center gap-1.5 rounded-md px-1.5 py-1 font-medium"
+            style={{ background: `${activityMeta.color}22`, color: activityMeta.color }}
+          >
+            <MapPin size={11} className="shrink-0" />
+            <span className="truncate">{activityMeta.section}</span>
+            <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-slate-200">
+              <ActivityIcon size={11} />
+              {activityMeta.label}
+            </span>
+          </div>
           <div className="mt-1 flex items-center gap-1.5 text-slate-300">
             <User size={11} style={{ color: accent }} />
             <span className="truncate">{agent.author}</span>
@@ -599,10 +947,22 @@ function Agent3D({ agent, placement, selected, dimmed = false, onSelect }: Agent
           {agent.file && (
             <div className="mt-0.5 flex items-center gap-1.5 text-slate-400">
               <FileCode2 size={11} />
-              <span className="truncate font-mono text-[10px]">{agent.file}</span>
+              <span className="truncate font-mono text-[10px]">
+                {agent.tool && <span className="text-slate-500">{agent.tool} · </span>}
+                {agent.file}
+              </span>
+            </div>
+          )}
+          {agent.subAgents.length > 0 && (
+            <div className="mt-1 flex items-center gap-1.5 rounded-md bg-fuchsia-500/15 px-1.5 py-0.5 text-fuchsia-300">
+              <Bot size={11} className="shrink-0" />
+              <span className="truncate">
+                sub-agent ×{agent.subAgents.length} · {agent.subAgents.map((s) => s.type).join(', ')}
+              </span>
             </div>
           )}
         </div>
+        )}
       </Html>
     </group>
   );

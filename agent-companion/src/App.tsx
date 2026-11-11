@@ -10,19 +10,48 @@ import SessionTable from './components/SessionTable';
 import SimulatorPanel, { type LogEntry } from './components/SimulatorPanel';
 import { useAgentSocket, type SocketStatus } from './hooks/useAgentSocket';
 import {
+  ACTIVITY_STATUS,
   AGENT_STATUSES,
+  type AgentActivity,
+  DEFAULT_ACTIVITY,
   STATUS_META,
   type AgentEvent,
   type AgentState,
   type AgentStatus,
   type AgentUpdateEvent,
+  MAX_SUB_AGENTS,
+  type SubAgentInfo,
 } from './types';
-import { assignDesks, computeCollabGroups, computePlacements, groupSpots } from './utils/layout';
+import {
+  assignDesks,
+  computeCollabGroups,
+  computePlacements,
+  computeSubPlacements,
+  groupSpots,
+  subKey,
+} from './utils/layout';
 import { DESKS } from './utils/office';
+import { OUTFITS, assignOutfits } from './utils/outfits';
 import { playMumble, playSuccessJingle, setMuted, unlockAudio, voicePitchFor } from './utils/sound';
 
 const WS_URL: string = import.meta.env.VITE_AGENT_WS ?? 'ws://localhost:8080';
 const CHATTER_INTERVAL_MS = 4000;
+/** sub-agent ที่เสร็จแล้วยังฉลองอยู่ข้างตัวแม่นานเท่านี้ ก่อนหายไป (simulator) */
+const SUB_DONE_MS = 4000;
+const SUB_BEAM_COLOR = '#e879f9';
+
+/** ชนิดของ sub-agent → ท่าทางของหุ่นจิ๋ว */
+function subActivity(type: string): AgentActivity {
+  if (/explore|search|find/i.test(type)) return 'searching';
+  if (/plan|architect/i.test(type)) return 'planning';
+  if (/review|audit|security|guide/i.test(type)) return 'reading';
+  if (/test|qa/i.test(type)) return 'testing';
+  if (/web|fetch|research/i.test(type)) return 'web';
+  return 'writing';
+}
+
+const SIM_SUB_TYPES = ['Explore', 'Plan', 'general-purpose', 'code-reviewer', 'test-runner', 'web-fetch'];
+const SIM_SUB_TASKS = ['สำรวจโครงสร้างโค้ด', 'วางแผน implementation', 'แก้ไฟล์ที่เกี่ยวข้อง', 'รีวิว diff', 'รันชุดเทสต์', 'อ่านเอกสาร API'];
 const SHARED_TASK_ID = 'checkout';
 
 // ============================================================
@@ -40,10 +69,14 @@ const HISTORY_LIMIT = 12;
 
 function mergeAgent(prev: AgentState | undefined, ev: AgentUpdateEvent): AgentState {
   const now = Date.now();
-  const status = ev.status ?? prev?.status ?? 'idle';
+  const status = ev.status ?? (ev.activity ? ACTIVITY_STATUS[ev.activity] : undefined) ?? prev?.status ?? 'idle';
   const file = ev.file ?? prev?.file ?? '';
-  // นับเป็น "ขั้น" ใหม่ เมื่อสถานะหรือไฟล์เปลี่ยนเท่านั้น
-  const changed = !prev || status !== prev.status || file !== prev.file;
+  // activity: ถ้า event ไม่ได้ระบุแต่ status เปลี่ยน (เช่นกดจาก simulator) ให้ใช้ค่าเริ่มต้นของ status นั้น
+  const statusChanged = !!prev && status !== prev.status;
+  const activity = ev.activity ?? (statusChanged || !prev ? DEFAULT_ACTIVITY[status] : prev.activity);
+  const tool = ev.tool ?? (ev.activity || statusChanged ? '' : (prev?.tool ?? ''));
+  // นับเป็น "ขั้น" ใหม่ เมื่อสถานะ/activity/ไฟล์เปลี่ยนเท่านั้น
+  const changed = !prev || status !== prev.status || activity !== prev.activity || file !== prev.file;
   return {
     sessionId: ev.sessionId,
     author: ev.author ?? prev?.author ?? 'unknown',
@@ -51,10 +84,15 @@ function mergeAgent(prev: AgentState | undefined, ev: AgentUpdateEvent): AgentSt
     taskId: ev.taskId ?? prev?.taskId ?? ev.task ?? 'default',
     file,
     status,
+    activity,
+    tool,
     updatedAt: now,
     startedAt: prev?.startedAt ?? now,
     steps: (prev?.steps ?? 0) + (changed ? 1 : 0),
-    history: changed ? [...(prev?.history ?? []), { ts: now, status, file }].slice(-HISTORY_LIMIT) : (prev?.history ?? []),
+    history: changed
+      ? [...(prev?.history ?? []), { ts: now, status, activity, file }].slice(-HISTORY_LIMIT)
+      : (prev?.history ?? []),
+    subAgents: ev.subAgents ?? prev?.subAgents ?? [],
   };
 }
 
@@ -89,7 +127,9 @@ function describe(ev: AgentEvent): string {
   if (ev.type === 'snapshot') return `snapshot ${ev.agents.length} agents`;
   const parts = [ev.sessionId.slice(0, 8)];
   if (ev.status) parts.push(`→ ${ev.status}`);
+  if (ev.activity) parts.push(`[${ev.activity}]`);
   if (ev.file) parts.push(ev.file);
+  if (ev.subAgents) parts.push(`sub×${ev.subAgents.length}`);
   return parts.join(' ');
 }
 
@@ -153,6 +193,54 @@ export default function App() {
   }, [agents, deskOf]);
   const activeSpots = useMemo(() => new Set(groupSpots(groups).values()), [groups]);
 
+  // ชุดแต่งตัวประจำตัว: คงเดิมตลอดอายุ session และไม่ซ้ำกับตัวอื่นในฉาก
+  const outfitRef = useRef<Record<string, number>>({});
+  const outfitOf = useMemo(() => {
+    const next = assignOutfits(store.order, outfitRef.current);
+    outfitRef.current = next;
+    return next;
+  }, [store.order]);
+
+  // ---------- sub-agent: หุ่นจิ๋วที่ยืนทำงานข้างตัวแม่ (ใส่ชุดทีมเดียวกับตัวแม่) ----------
+  const subPlacements = useMemo(() => computeSubPlacements(agents, placements), [agents, placements]);
+  const minis = useMemo(
+    () =>
+      agents.flatMap((parent) =>
+        parent.subAgents.map((sub) => {
+          const activity: AgentActivity = sub.status === 'done' ? 'done' : subActivity(sub.type);
+          const state: AgentState = {
+            sessionId: subKey(parent.sessionId, sub.id),
+            author: parent.author,
+            task: sub.task,
+            taskId: parent.taskId,
+            file: '',
+            status: ACTIVITY_STATUS[activity],
+            activity,
+            tool: '',
+            updatedAt: parent.updatedAt,
+            startedAt: parent.startedAt,
+            steps: 0,
+            history: [],
+            subAgents: [],
+          };
+          return { parent, sub, state };
+        }),
+      ),
+    [agents],
+  );
+  // AgentState ของหุ่นจิ๋วถูกสร้างใหม่ทุกครั้งที่ตัวแม่อัปเดต → เก็บ object เดิมไว้ถ้าเนื้อหาไม่เปลี่ยน (ให้ memo ทำงาน)
+  const miniCache = useRef<Record<string, AgentState>>({});
+  const miniStates = useMemo(() => {
+    const next: Record<string, AgentState> = {};
+    for (const { state } of minis) {
+      const old = miniCache.current[state.sessionId];
+      next[state.sessionId] =
+        old && old.status === state.status && old.activity === state.activity && old.task === state.task ? old : state;
+    }
+    miniCache.current = next;
+    return next;
+  }, [minis]);
+
   const beams = useMemo(() => {
     const list: { key: string; from: string; to: string }[] = [];
     for (const ids of groups.values()) {
@@ -165,6 +253,14 @@ export default function App() {
     }
     return list;
   }, [groups]);
+
+  // ลำแสงสีชมพูจากตัวแม่ → sub-agent แต่ละตัว
+  const subBeamKey = minis.map((m) => m.state.sessionId).join('|');
+  const subBeams = useMemo(
+    () => minis.map((m) => ({ key: m.state.sessionId, from: m.parent.sessionId, to: m.state.sessionId })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- เปลี่ยนเมื่อรายชื่อ sub-agent เปลี่ยนเท่านั้น
+    [subBeamKey],
+  );
 
   // ---------- Success jingle: เล่นตอน "เปลี่ยนเป็น" success เท่านั้น ----------
   const prevStatus = useRef<Record<string, AgentStatus>>({});
@@ -242,11 +338,14 @@ export default function App() {
     createTeam();
     setScriptRunning(true);
     const [alpha, beta, gamma] = TEAM.map((m) => m.sessionId);
-    const steps: [number, string, AgentStatus, string?][] = [
-      [1000, alpha, 'thinking'],
-      [1200, beta, 'thinking'],
-      [2800, alpha, 'coding', 'src/cart/Cart.tsx'],
-      [3200, beta, 'coding', 'src/api/checkout.ts'],
+    // [เวลา ms, session, status, file?, activity?] — activity ที่ไม่ระบุใช้ค่าเริ่มต้นของ status
+    const steps: [number, string, AgentStatus, string?, AgentActivity?][] = [
+      [1000, alpha, 'thinking', 'src/cart', 'reading'],
+      [1200, beta, 'thinking', 'checkout', 'searching'],
+      [2800, alpha, 'coding', 'src/cart/Cart.tsx', 'writing'],
+      [3200, beta, 'thinking', 'https://docs.stripe.com', 'web'],
+      [4200, beta, 'coding', '$ npm run build', 'running'],
+      [5200, beta, 'coding', 'src/api/checkout.ts', 'writing'],
       [6500, gamma, 'testing', 'tests/checkout.spec.ts'],
       [11000, gamma, 'error', 'tests/checkout.spec.ts'],
       [13000, gamma, 'testing', 'tests/checkout.spec.ts'],
@@ -254,13 +353,34 @@ export default function App() {
       [17500, alpha, 'testing', 'tests/cart.spec.ts'],
       [20500, alpha, 'success'],
       [21000, gamma, 'success'],
-      [27000, alpha, 'idle'],
+      [24000, alpha, 'idle', 'ขออนุญาตรัน npm publish', 'waiting'],
+      [27000, alpha, 'idle', '', 'idle'],
       [27000, beta, 'idle'],
       [27000, gamma, 'idle'],
     ];
-    scriptTimers.current = steps.map(([ms, id, status, file]) =>
-      setTimeout(() => sim({ type: 'agent_update', sessionId: id, status, ...(file ? { file } : {}) }), ms),
+    scriptTimers.current = steps.map(([ms, id, status, file, activity]) =>
+      setTimeout(
+        () =>
+          sim({
+            type: 'agent_update',
+            sessionId: id,
+            status,
+            ...(file !== undefined ? { file } : {}),
+            ...(activity ? { activity } : {}),
+          }),
+        ms,
+      ),
     );
+    // alpha เรียก sub-agent 2 ตัวมาช่วยสำรวจ/วางแผน แล้วทยอยทำเสร็จ; gamma เรียกตัวช่วยรันเทสต์
+    const subSteps: [number, () => void][] = [
+      [1600, () => spawnSub(alpha, 'Explore', 'สำรวจโค้ดตะกร้าสินค้า')],
+      [2100, () => spawnSub(alpha, 'Plan', 'วางแผน refactor Cart')],
+      [7000, () => spawnSub(gamma, 'test-runner', 'รัน e2e checkout')],
+      [8500, () => finishSub(alpha)],
+      [10500, () => finishSub(alpha)],
+      [15000, () => finishSub(gamma)],
+    ];
+    scriptTimers.current.push(...subSteps.map(([ms, fn]) => setTimeout(fn, ms)));
     scriptTimers.current.push(setTimeout(() => setScriptRunning(false), 27200));
   };
 
@@ -272,6 +392,9 @@ export default function App() {
 
   const setStatus = (sessionId: string, status: AgentStatus) => sim({ type: 'agent_update', sessionId, status });
 
+  const setActivity = (sessionId: string, activity: AgentActivity) =>
+    sim({ type: 'agent_update', sessionId, activity });
+
   const toggleTask = (a: AgentState) => {
     const joining = a.taskId !== SHARED_TASK_ID;
     sim({
@@ -282,13 +405,60 @@ export default function App() {
     });
   };
 
+  // ---------- sub-agent (simulator): เรียกเพิ่ม / ทำเสร็จทีละตัว ----------
+  const agentsRef = useRef(store.agents);
+  agentsRef.current = store.agents;
+  const subTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const subSeq = useRef(0);
+
+  const spawnSub = (sessionId: string, type = pick(SIM_SUB_TYPES), task = pick(SIM_SUB_TASKS)) => {
+    const a = agentsRef.current[sessionId];
+    if (!a) return;
+    const sub: SubAgentInfo = { id: `s${++subSeq.current}`, type, task, status: 'running' };
+    sim({
+      type: 'agent_update',
+      sessionId,
+      activity: 'delegating',
+      tool: 'Agent',
+      file: `${type}: ${task}`,
+      subAgents: [...a.subAgents, sub].slice(-MAX_SUB_AGENTS),
+    });
+  };
+
+  const finishSub = (sessionId: string) => {
+    const a = agentsRef.current[sessionId];
+    const target = a?.subAgents.find((s) => s.status === 'running');
+    if (!a || !target) return;
+    sim({
+      type: 'agent_update',
+      sessionId,
+      subAgents: a.subAgents.map((s) => (s.id === target.id ? { ...s, status: 'done' as const } : s)),
+    });
+    // ฉลองแป๊บหนึ่ง แล้วหายไป
+    subTimers.current.push(
+      setTimeout(() => {
+        const cur = agentsRef.current[sessionId];
+        if (!cur?.subAgents.some((s) => s.id === target.id)) return;
+        sim({ type: 'agent_update', sessionId, subAgents: cur.subAgents.filter((s) => s.id !== target.id) });
+      }, SUB_DONE_MS),
+    );
+  };
+
   const clearAll = () => {
     stopScript();
+    subTimers.current.forEach(clearTimeout);
+    subTimers.current = [];
     dispatch({ type: 'clear' });
     setSelectedId(null);
   };
 
-  useEffect(() => () => scriptTimers.current.forEach(clearTimeout), []);
+  useEffect(
+    () => () => {
+      scriptTimers.current.forEach(clearTimeout);
+      subTimers.current.forEach(clearTimeout);
+    },
+    [],
+  );
 
   const counts = useMemo(() => {
     const c = Object.fromEntries(AGENT_STATUSES.map((s) => [s, 0])) as Record<AgentStatus, number>;
@@ -317,7 +487,7 @@ export default function App() {
             <div className="font-mono text-xs tracking-[0.08em] text-[#93A0B4]">CLAUDE CODE · LOCAL</div>
             <h1 className="m-0 text-[32px] font-bold leading-tight tracking-[-0.01em]">Agent Floor</h1>
             <p className="m-0 text-[15px] text-[#93A0B4]">
-              ห้องทำงาน 3 มิติของ agent — ดูว่าแต่ละ session กำลังทำอะไร และใครเป็นคนสั่ง
+              ห้องทำงาน + ห้องพักผ่อน 3 มิติของ agent — ดูว่าแต่ละ session กำลังทำอะไร เรียก sub-agent กี่ตัว และใครเป็นคนสั่ง
             </p>
           </div>
           <div className="flex items-center gap-2.5 rounded-full border border-[#263247] bg-[#131A26] px-3.5 py-2 text-[13px] text-[#B7C2D3]">
@@ -366,28 +536,28 @@ export default function App() {
       >
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1E2838] px-[18px] py-3.5">
           <div className="text-sm font-semibold">ฉาก 3 มิติ · {agents.length} agents</div>
-          <div className="text-[13px] text-[#93A0B4]">คลิกที่หุ่นเพื่อดูรายละเอียด · ลากเพื่อหมุนกล้อง</div>
+          <div className="text-[13px] text-[#93A0B4]">คลิกที่หุ่นเพื่อดูรายละเอียด · ลากเพื่อหมุนกล้อง · คลิกขวาลากเพื่อเลื่อน</div>
         </div>
         <div className="relative h-[min(660px,72vh)] min-h-[420px]">
         <Canvas
           shadows
           dpr={[1, 2]}
-          camera={{ position: [0, 9, 15.5], fov: 45 }}
+          camera={{ position: [-4, 13, 20.5], fov: 45 }}
           onPointerMissed={() => setSelectedId(null)}
         >
           <color attach="background" args={['#0F141E']} />
-          <fog attach="fog" args={['#0F141E', 28, 60]} />
+          <fog attach="fog" args={['#0F141E', 38, 80]} />
           <ambientLight intensity={0.55} />
           <hemisphereLight args={['#bcd7ff', '#1a2236', 0.7]} />
           <directionalLight
             position={[6, 14, 9]}
             intensity={1.5}
             castShadow
-            shadow-mapSize={[2048, 2048]}
-            shadow-camera-left={-12}
-            shadow-camera-right={12}
-            shadow-camera-top={12}
-            shadow-camera-bottom={-12}
+            shadow-mapSize={[4096, 4096]}
+            shadow-camera-left={-22}
+            shadow-camera-right={14}
+            shadow-camera-top={14}
+            shadow-camera-bottom={-14}
             shadow-bias={-0.0005}
           />
           <Stars radius={80} depth={40} count={1800} factor={3} fade speed={0.6} />
@@ -399,21 +569,39 @@ export default function App() {
               key={a.sessionId}
               agent={a}
               placement={placements[a.sessionId]}
+              outfit={OUTFITS[outfitOf[a.sessionId] ?? 0]}
               selected={selectedId === a.sessionId}
               dimmed={filter !== 'all' && a.status !== filter}
+              onSelect={setSelectedId}
+            />
+          ))}
+          {minis.map(({ parent, sub, state }) => (
+            <Agent3D
+              key={state.sessionId}
+              mini
+              agent={miniStates[state.sessionId] ?? state}
+              subType={sub.type}
+              placement={subPlacements[state.sessionId]}
+              outfit={OUTFITS[outfitOf[parent.sessionId] ?? 0]}
+              spawnAt={placements[parent.sessionId]?.position}
+              selectId={parent.sessionId}
+              selected={false}
+              dimmed={filter !== 'all' && parent.status !== filter}
               onSelect={setSelectedId}
             />
           ))}
           {beams.map((b) => (
             <CollabBeam key={b.key} fromId={b.from} toId={b.to} />
           ))}
+          {subBeams.map((b) => (
+            <CollabBeam key={b.key} fromId={b.from} toId={b.to} color={SUB_BEAM_COLOR} />
+          ))}
 
           <OrbitControls
             makeDefault
-            target={[0, 0.8, 0]}
-            enablePan={false}
+            target={[-4, 0.8, 0]}
             minDistance={5}
-            maxDistance={30}
+            maxDistance={42}
             maxPolarAngle={Math.PI / 2.1}
           />
         </Canvas>
@@ -452,6 +640,14 @@ export default function App() {
             ลำแสง = กำลังร่วมงาน task เดียวกัน
           </span>
           <span className="flex items-center gap-2">
+            <span className="inline-block h-0 w-5 border-t-2 border-dashed border-[#e879f9]" />
+            หุ่นจิ๋ว + ลำแสงชมพู = sub-agent
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="inline-block h-2.5 w-3.5 rounded-sm bg-[#7c3aed]" />
+            ชุดแต่งตัว = ประจำตัวแต่ละ session
+          </span>
+          <span className="flex items-center gap-2">
             <span className="inline-block h-2.5 w-[18px] rounded-full border-2 border-[#E6EBF2]" />
             วงขาว = session ที่เลือก
           </span>
@@ -462,6 +658,7 @@ export default function App() {
       <aside className="flex min-w-0 flex-[1_1_340px] flex-col gap-5">
       <DetailPanel
         agent={panelAgent}
+        outfitName={panelAgent ? OUTFITS[outfitOf[panelAgent.sessionId] ?? 0].name : ''}
         n={panelIndex}
         inCollab={!!panelAgent && collabIds.has(panelAgent.sessionId)}
         onSetStatus={setStatus}
@@ -484,6 +681,9 @@ export default function App() {
         onAddRandom={addRandom}
         onClear={clearAll}
         onSetStatus={setStatus}
+        onSetActivity={setActivity}
+        onSpawnSub={(id) => spawnSub(id)}
+        onFinishSub={finishSub}
         onToggleTask={toggleTask}
         onRemove={(id) => sim({ type: 'agent_remove', sessionId: id })}
         onCustomEvent={sim}

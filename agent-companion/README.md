@@ -105,6 +105,24 @@ hook ใช้แบบ `async` + `exit 0` เสมอ จึงไม่ทำ
 | `Stop` | success |
 | `SessionEnd` | ลบออกจากฉาก |
 
+**activity / section** — นอกจาก `status` แล้ว bridge ส่ง `activity` + `tool` ที่ละเอียดกว่า (ฝั่งเว็บใช้เลือกท่าทางและป้าย section ใน `ACTIVITY_META` ที่ `src/types.ts`):
+
+| Hook / tool | activity | section | ท่าทาง |
+|---|---|---|---|
+| `UserPromptSubmit`, TodoWrite | planning | โซนวางแผน | จับคาง + halo |
+| Read / LS | reading | ห้องสมุด | ถือเอกสาร กวาดสายตา + แผงเอกสาร |
+| Grep / Glob | searching | โซนค้นหา | ส่องแว่นขยาย |
+| WebFetch / WebSearch | web | โซนเว็บ | ชี้ลูกโลก |
+| Edit / Write / MultiEdit | writing | โซนเขียนโค้ด | พิมพ์รัว + คีย์บอร์ดโฮโลแกรม |
+| Bash (ทั่วไป) / tool อื่น | running | เทอร์มินัล | พิมพ์เป็นช่วง + แผงเทอร์มินัล |
+| Bash (เทสต์) | testing | โซนทดสอบ | สแกน + วงแหวน |
+| Task / Agent | delegating | ห้องประชุม | ชี้สั่งงาน + วงสัญญาณ |
+| `Notification`, AskUserQuestion | waiting | จุดรอคำสั่ง | ยืนยกมือโบก (ไม่เดินเล่น) |
+| `Stop` | done | จุดส่งงาน | ฉลอง |
+| PostToolUse ล้มเหลว | failed | จุดแก้ปัญหา | สั่นเตือน |
+
+event ที่ไม่ส่ง `activity` (เช่น simulator/curl) จะใช้ค่าเริ่มต้นตาม `status` · section แสดงใน HUD เหนือหัว, แผงรายละเอียด และตาราง session
+
 `taskId` = ชื่อโฟลเดอร์โปรเจกต์ (`cwd`) → session ที่ทำงานในโปรเจกต์เดียวกันพร้อมกันจะบินมารวมกลุ่มเอง
 
 ## 5. รูปแบบ Event (WebSocket JSON)

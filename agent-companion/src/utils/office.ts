@@ -10,6 +10,23 @@ export type Pose = 'sit' | 'stand';
 
 export const ROOM = { minX: -8.5, maxX: 8.5, minZ: -6.5, maxZ: 5.5, wallH: 3.6 } as const;
 
+/** ห้องพักผ่อน: อยู่ทางซ้ายของห้องทำงาน ใช้ผนังกั้นร่วมกันที่ x = ROOM.minX */
+export const LOUNGE = { minX: -16.5, maxX: ROOM.minX, minZ: ROOM.minZ, maxZ: ROOM.maxZ } as const;
+
+/** ช่องประตูในผนังกั้นระหว่างห้องทำงาน ↔ ห้องพักผ่อน */
+export const LOUNGE_DOOR = { z0: 3.1, z1: 4.9 } as const;
+
+/** ตำแหน่งเฟอร์นิเจอร์ในห้องพักผ่อน (ใช้ร่วมกันทั้งตอนวาดฉากและตอนคำนวณเส้นทาง) */
+export const LOUNGE_ITEMS = {
+  pool: { x: -12.6, z: 1.4, w: 2.8, d: 1.6 },
+  arcades: [-15.1, -13.9].map((x) => ({ x, z: -5.95 })),
+  tv: { x: -10.8, z: -6.15 },
+  tvSofa: { x: -10.8, z: -3.4 },
+  wallSofa: { x: -15.85, z: 3.9 },
+  lowTable: { x: -14.4, z: 3.9 },
+  massage: [-2.4, -0.6].map((z) => ({ x: -15.7, z })),
+};
+
 /** ประตูอยู่ที่ผนังขวา: Agent ใหม่จะเดินเข้ามาจากตรงนี้ */
 export const DOOR = { z: 3.9, spawn: [7.9, 0, 3.9] as Vec3 };
 
@@ -54,22 +71,72 @@ export const MEETING_SPOTS: Vec3[] = [
 export const MEETING_TABLE_R = 0.78;
 
 // ---------------- จุดที่ Agent ที่ว่างอยู่จะเดินไปเล่น ----------------
+/** กิจกรรมพิเศษที่จุดนั้น → Agent3D ใช้เลือกท่าทาง */
+export type PoiAct = 'arcade' | 'pool' | 'console' | 'massage' | 'sofa';
+
 export interface Poi {
   name: string;
   stand: Vec3;
   lookAt: Vec3;
   pose: Pose;
+  /** จุดในห้องพักผ่อนถูกสุ่มเลือกบ่อยกว่า และอยู่นานกว่า */
+  lounge?: boolean;
+  act?: PoiAct;
 }
+
+const { pool, arcades, tvSofa, wallSofa, massage } = LOUNGE_ITEMS;
 
 export const POIS: Poi[] = [
   { name: 'ชั้นหนังสือ', stand: [-7.3, 0, -1.4], lookAt: [-9, 0, -1.4], pose: 'stand' },
   { name: 'เครื่องชงกาแฟ', stand: [-7.3, 0, 0.4], lookAt: [-9, 0, 0.4], pose: 'stand' },
   { name: 'ตู้ขนม', stand: [-7.3, 0, 1.5], lookAt: [-9, 0, 1.5], pose: 'stand' },
   { name: 'ตู้น้ำ', stand: [-7.3, 0, 2.45], lookAt: [-9, 0, 2.45], pose: 'stand' },
-  { name: 'โซฟา 1', stand: [-7.9, 0, 3.5], lookAt: [0, 0, 3.5], pose: 'sit' },
-  { name: 'โซฟา 2', stand: [-7.9, 0, 4.5], lookAt: [0, 0, 4.5], pose: 'sit' },
   { name: 'ไวต์บอร์ด', stand: [7.5, 0, -1.5], lookAt: [9, 0, -1.5], pose: 'stand' },
   { name: 'เครื่องปริ้นท์', stand: [7.5, 0, 0.9], lookAt: [9, 0, 0.9], pose: 'stand' },
+  // ---------- ห้องพักผ่อน ----------
+  ...arcades.map(
+    (a, i): Poi => ({
+      name: `ตู้เกม ${i + 1}`,
+      stand: [a.x, 0, -5.0],
+      lookAt: [a.x, 0, -9],
+      pose: 'stand',
+      lounge: true,
+      act: 'arcade',
+    }),
+  ),
+  ...[-0.55, 0.55].map(
+    (dx, i): Poi => ({
+      name: `เกมคอนโซล ${i + 1}`,
+      stand: [tvSofa.x + dx, 0, tvSofa.z],
+      lookAt: [tvSofa.x + dx, 0, -9],
+      pose: 'sit',
+      lounge: true,
+      act: 'console',
+    }),
+  ),
+  { name: 'โต๊ะพูล (หน้า)', stand: [pool.x - 0.5, 0, pool.z + 1.4], lookAt: [pool.x - 0.5, 0, pool.z], pose: 'stand', lounge: true, act: 'pool' },
+  { name: 'โต๊ะพูล (หลัง)', stand: [pool.x + 0.5, 0, pool.z - 1.4], lookAt: [pool.x + 0.5, 0, pool.z], pose: 'stand', lounge: true, act: 'pool' },
+  { name: 'โต๊ะพูล (ซ้าย)', stand: [pool.x - 2.0, 0, pool.z], lookAt: [pool.x, 0, pool.z], pose: 'stand', lounge: true, act: 'pool' },
+  ...massage.map(
+    (m, i): Poi => ({
+      name: `เก้าอี้นวด ${i + 1}`,
+      stand: [m.x, 0, m.z],
+      lookAt: [0, 0, m.z],
+      pose: 'sit',
+      lounge: true,
+      act: 'massage',
+    }),
+  ),
+  ...[-0.55, 0.55].map(
+    (dz, i): Poi => ({
+      name: `โซฟา ${i + 1}`,
+      stand: [wallSofa.x, 0, wallSofa.z + dz],
+      lookAt: [0, 0, wallSofa.z + dz],
+      pose: 'sit',
+      lounge: true,
+      act: 'sofa',
+    }),
+  ),
 ];
 
 const poiClaims = new Map<number, string>();
@@ -78,7 +145,17 @@ const poiClaims = new Map<number, string>();
 export function claimPoi(sessionId: string): number {
   const free = POIS.map((_, i) => i).filter((i) => !poiClaims.has(i));
   if (free.length === 0) return -1;
-  const idx = free[Math.floor(Math.random() * free.length)];
+  // ถ่วงน้ำหนัก: ว่างแล้วส่วนใหญ่จะไปห้องพักผ่อน
+  const weight = (i: number) => (POIS[i].lounge ? 3 : 1);
+  let roll = Math.random() * free.reduce((n, i) => n + weight(i), 0);
+  let idx = free[free.length - 1];
+  for (const i of free) {
+    roll -= weight(i);
+    if (roll <= 0) {
+      idx = i;
+      break;
+    }
+  }
   poiClaims.set(idx, sessionId);
   return idx;
 }
@@ -95,17 +172,30 @@ const rects: Rect[] = [
   ...DESKS.map((d) => ({ x0: d.x - 0.75, z0: d.z - 0.36, x1: d.x + 0.75, z1: d.z + 0.36 })),
   { x0: -8.5, z0: -2.2, x1: -8.0, z1: -0.6 }, // ชั้นหนังสือ
   { x0: -8.5, z0: -0.1, x1: -7.9, z1: 2.0 }, // เคาน์เตอร์กาแฟ
-  { x0: -8.5, z0: 2.9, x1: -7.6, z1: 5.1 }, // โซฟา
-  { x0: -6.7, z0: 3.5, x1: -5.9, z1: 4.5 }, // โต๊ะกลางหน้าโซฟา
   { x0: 8.0, z0: 0.2, x1: 8.5, z1: 1.6 }, // ตู้เครื่องปริ้นท์
+  // ผนังกั้นห้องทำงาน ↔ ห้องพักผ่อน (เว้นช่องประตู)
+  { x0: ROOM.minX - 0.1, z0: ROOM.minZ, x1: ROOM.minX + 0.1, z1: LOUNGE_DOOR.z0 },
+  { x0: ROOM.minX - 0.1, z0: LOUNGE_DOOR.z1, x1: ROOM.minX + 0.1, z1: ROOM.maxZ },
+  // ---------- ห้องพักผ่อน ----------
+  { x0: pool.x - pool.w / 2, z0: pool.z - pool.d / 2, x1: pool.x + pool.w / 2, z1: pool.z + pool.d / 2 }, // โต๊ะพูล
+  { x0: -15.6, z0: -6.5, x1: -13.4, z1: -5.45 }, // ตู้เกม
+  { x0: -11.9, z0: -6.5, x1: -9.7, z1: -5.9 }, // ชั้นวางทีวี
+  // โซฟา/เก้าอี้นวด: กันเฉพาะพนักพิง เพื่อให้เดินเข้าไปนั่งจากด้านหน้าเสมอ
+  { x0: tvSofa.x - 1.3, z0: tvSofa.z + 0.25, x1: tvSofa.x + 1.3, z1: tvSofa.z + 0.6 },
+  { x0: -16.5, z0: wallSofa.z - 1.3, x1: -16.1, z1: wallSofa.z + 1.3 },
+  { x0: -14.8, z0: 3.4, x1: -14.0, z1: 4.4 }, // โต๊ะเตี้ยหน้าโซฟา
+  { x0: -16.5, z0: -3.0, x1: -16.0, z1: 0.0 }, // เก้าอี้นวด
 ];
 const circles: Circle[] = [
   ...MEETING_SPOTS.map((s) => ({ x: s[0], z: s[2], r: MEETING_TABLE_R })),
   { x: -8.0, z: 2.45, r: 0.3 }, // ตู้น้ำ
-  { x: -8.0, z: -5.9, r: 0.35 }, // ต้นไม้
+  { x: -7.9, z: -5.9, r: 0.35 }, // ต้นไม้
   { x: 8.0, z: -5.9, r: 0.35 },
   { x: 8.0, z: 5.0, r: 0.35 },
   { x: -3.6, z: 4.9, r: 0.35 },
+  { x: -9.1, z: -5.9, r: 0.35 }, // ต้นไม้ในห้องพักผ่อน
+  { x: -16.0, z: 1.3, r: 0.35 },
+  { x: -9.2, z: 0.6, r: 0.35 },
 ];
 export const PLANTS: Circle[] = circles.slice(MEETING_SPOTS.length + 1);
 
@@ -123,7 +213,7 @@ function hitsObstacle(x: number, z: number): boolean {
 
 // ---------------- grid + A* ----------------
 const CELL = 0.25;
-const GX0 = -8.1;
+const GX0 = -16.1;
 const GZ0 = -6.0;
 const NX = Math.round((8.1 - GX0) / CELL) + 1;
 const NZ = Math.round((5.1 - GZ0) / CELL) + 1;

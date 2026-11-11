@@ -1,5 +1,6 @@
-import { Bot, Radio } from 'lucide-react';
-import { STATUS_META, type AgentState, type AgentStatus } from '../types';
+import { Bot, MapPin, Radio, Shirt } from 'lucide-react';
+import { ACTIVITY_META, STATUS_META, type AgentState, type AgentStatus } from '../types';
+import { ACTIVITY_ICON } from './activityIcons';
 import { useNow } from '../hooks/useNow';
 import { formatElapsed } from '../utils/people';
 import Avatar from './Avatar';
@@ -51,12 +52,14 @@ interface Props {
   agent: AgentState | undefined;
   /** ลำดับของ session ในฉาก (เริ่มที่ 1) */
   n: number;
+  /** ชื่อชุดแต่งตัวของหุ่นตัวนี้ */
+  outfitName: string;
   inCollab: boolean;
   onSetStatus: (sessionId: string, status: AgentStatus) => void;
   onRemove: (sessionId: string) => void;
 }
 
-export default function DetailPanel({ agent, n, inCollab, onSetStatus, onRemove }: Props) {
+export default function DetailPanel({ agent, n, outfitName, inCollab, onSetStatus, onRemove }: Props) {
   const now = useNow();
 
   if (!agent) {
@@ -71,6 +74,8 @@ export default function DetailPanel({ agent, n, inCollab, onSetStatus, onRemove 
   }
 
   const meta = STATUS_META[agent.status];
+  const activity = ACTIVITY_META[agent.activity];
+  const ActivityIcon = ACTIVITY_ICON[agent.activity];
   const [primary, secondary] = ACTIONS[agent.status];
   const run = (a: Action) => () => (a.to === 'remove' ? onRemove(agent.sessionId) : onSetStatus(agent.sessionId, a.to));
   const timeline = agent.history.slice(-5);
@@ -124,15 +129,56 @@ export default function DetailPanel({ agent, n, inCollab, onSetStatus, onRemove 
               </span>
             </span>
           </div>
+          {outfitName && (
+            <div className="flex items-center gap-1.5 text-xs text-[#B7C2D3]">
+              <Shirt size={12} className="shrink-0" aria-hidden="true" />
+              <span className="truncate">ชุด: {outfitName}</span>
+            </div>
+          )}
         </div>
       </div>
 
+      {agent.subAgents.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-[14px] border border-fuchsia-400/40 bg-[#0F141E] p-3.5">
+          <div className="flex items-center gap-2 text-[13px] font-semibold text-fuchsia-300">
+            <Bot size={14} aria-hidden="true" />
+            Sub-agent ที่เรียกใช้ ({agent.subAgents.length})
+          </div>
+          <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+            {agent.subAgents.map((s) => (
+              <li key={s.id} className="flex items-center gap-2 text-[13px]">
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${s.status === 'running' ? 'animate-pulse bg-fuchsia-400' : 'bg-[#4ade80]'}`}
+                />
+                <span className="shrink-0 rounded-md border border-[#33405A] bg-[#0B0F17] px-1.5 py-0.5 font-mono text-[11px]">
+                  {s.type}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[#D3DAE5]">{s.task || '—'}</span>
+                <span className="shrink-0 text-[11px] text-[#93A0B4]">{s.status === 'running' ? 'กำลังทำ' : 'เสร็จแล้ว'}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="flex flex-col gap-2.5 rounded-[14px] border bg-[#0F141E] p-3.5" style={{ borderColor: meta.color }}>
-        <div className="text-xs text-[#93A0B4]">กำลังทำอะไรอยู่</div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-md border border-[#33405A] bg-[#0B0F17] px-2 py-0.5 font-mono text-xs font-medium">
-            {meta.label}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-[#93A0B4]">กำลังทำอะไรอยู่</span>
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold"
+            style={{ background: `${activity.color}22`, color: activity.color }}
+            title="section ในห้องที่ agent กำลังทำงานอยู่ (มาจาก tool ล่าสุดใน hook)"
+          >
+            <MapPin size={12} aria-hidden="true" />
+            {activity.section}
           </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-[#33405A] bg-[#0B0F17] px-2 py-0.5 font-mono text-xs font-medium">
+            <ActivityIcon size={12} aria-hidden="true" />
+            {activity.label}
+          </span>
+          {agent.tool && <span className="font-mono text-xs text-[#93A0B4]">{agent.tool}</span>}
           <span className="break-all font-mono text-[13.5px]">{agent.file || '—'}</span>
         </div>
         <div className="text-sm text-[#D3DAE5]">{NOTE[agent.status]}</div>
@@ -148,10 +194,10 @@ export default function DetailPanel({ agent, n, inCollab, onSetStatus, onRemove 
               </span>
               <span
                 className={`h-[9px] w-[9px] rounded-full ${i === timeline.length - 1 ? 'animate-pulse' : ''}`}
-                style={{ background: STATUS_META[ev.status].color }}
+                style={{ background: ACTIVITY_META[ev.activity].color }}
               />
               <span className="text-[13.5px] leading-snug">
-                <span className="font-mono text-xs text-[#B7C2D3]">{STATUS_META[ev.status].label}</span>
+                <span className="font-mono text-xs text-[#B7C2D3]">{ACTIVITY_META[ev.activity].label}</span>
                 {ev.file && <> · <span className="break-all">{ev.file}</span></>}
               </span>
             </li>

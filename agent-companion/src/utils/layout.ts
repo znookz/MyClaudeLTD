@@ -64,6 +64,42 @@ export function assignDesks(agents: AgentState[], prev: Record<string, number>):
   return next;
 }
 
+/** จุดยืนของ sub-agent รอบตัวแม่ (เทียบกับตำแหน่งของตัวแม่): ซ้าย-ขวาก่อน แล้วค่อยไปข้างหลัง */
+const SUB_OFFSETS: [number, number][] = [
+  [-1.0, -0.25],
+  [1.0, -0.25],
+  [-0.75, -1.05],
+  [0.75, -1.05],
+  [0, -1.25],
+  [-1.5, -0.9],
+];
+
+/** หุ่นจิ๋ว (sub-agent) ยืนล้อมตัวแม่ หันหน้าทางเดียวกัน — คีย์ = `${sessionId}::${subId}` */
+export function computeSubPlacements(
+  agents: AgentState[],
+  placements: Record<string, Placement>,
+): Record<string, Placement> {
+  const result: Record<string, Placement> = {};
+  for (const a of agents) {
+    const parent = placements[a.sessionId];
+    if (!parent) continue;
+    a.subAgents.forEach((sub, k) => {
+      const [dx, dz] = SUB_OFFSETS[k % SUB_OFFSETS.length];
+      const position: Vec3 = [parent.position[0] + dx, 0, parent.position[2] + dz];
+      result[subKey(a.sessionId, sub.id)] = {
+        position,
+        lookAt: [position[0], 0, position[2] + 10],
+        groupKey: null,
+        pose: 'stand',
+        wander: false,
+      };
+    });
+  }
+  return result;
+}
+
+export const subKey = (sessionId: string, subId: string) => `${sessionId}::${subId}`;
+
 /** ตารางเป้าหมายของ Agent ทุกตัว: โต๊ะทำงานตามสถานะ / โต๊ะประชุมเมื่อร่วมงานกัน */
 export function computePlacements(
   agents: AgentState[],
@@ -87,7 +123,8 @@ export function computePlacements(
         lookAt: faceCamera(standAt),
         groupKey: null,
         pose: 'stand',
-        wander: a.status === 'idle',
+        // รออนุญาต/รอ input (waiting) → ยืนยกมือที่โต๊ะ ไม่เดินเล่น
+        wander: a.status === 'idle' && a.activity !== 'waiting',
       };
     }
   }

@@ -19,9 +19,56 @@ const agents = new Map();
 
 const TEST_CMD = /\b(test|tests|jest|vitest|pytest|mocha|playwright|cypress|phpunit|go test|cargo test|npm t)\b/i;
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
-const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Task', 'TodoWrite']);
+
+// tool → activity (ท่าทางของหุ่น + section ในห้อง) — ฝั่งเว็บ map activity → status/ป้าย/ท่าทางต่อเอง
+const READ_TOOLS = new Set(['Read', 'LS', 'NotebookRead']);
+const SEARCH_TOOLS = new Set(['Grep', 'Glob', 'ToolSearch']);
+const WEB_TOOLS = new Set(['WebFetch', 'WebSearch']);
+const DELEGATE_TOOLS = new Set(['Task', 'Agent']);
+const PLAN_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'EnterPlanMode', 'ExitPlanMode']);
+const ASK_TOOLS = new Set(['AskUserQuestion']);
+
+/** status คู่กับแต่ละ activity (ต้องตรงกับ ACTIVITY_STATUS ใน src/types.ts) */
+const ACTIVITY_STATUS = {
+  idle: 'idle',
+  waiting: 'idle',
+  planning: 'thinking',
+  reading: 'thinking',
+  searching: 'thinking',
+  web: 'thinking',
+  delegating: 'thinking',
+  writing: 'coding',
+  running: 'coding',
+  testing: 'testing',
+  done: 'success',
+  failed: 'error',
+};
 
 const short = (s, n = 60) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+// ---------------- sub-agent ----------------
+// แต่ละ session เก็บรายการ sub-agent ที่เรียกใช้อยู่ (tool Task/Agent) → หน้าเว็บวาดเป็นหุ่นจิ๋วข้างตัวแม่
+//   PreToolUse  Task/Agent → เพิ่ม (running)
+//   PostToolUse Task/Agent → เสร็จ (done) แล้วลบออกหลัง SUB_DONE_MS  (ยกเว้นตัวที่รันเบื้องหลัง: รอ SubagentStop)
+//   SubagentStop           → ตัวที่รันเบื้องหลังเสร็จ
+const MAX_SUBS = 6;
+const SUB_DONE_MS = 4000;
+let subSeq = 0;
+
+const subsOf = (sessionId) => agents.get(sessionId)?.subAgents ?? [];
+
+/** ทำเครื่องหมายว่าเสร็จ แล้วตั้งเวลาลบออกจากฉาก — คืนรายการใหม่ หรือ null ถ้าไม่มีตัวที่ตรง */
+function finishSub(sessionId, match) {
+  const list = subsOf(sessionId);
+  const target = list.find((s) => s.status === 'running' && match(s));
+  if (!target) return null;
+  setTimeout(() => {
+    if (!agents.has(sessionId)) return;
+    const rest = subsOf(sessionId).filter((s) => s.id !== target.id);
+    applyAndBroadcast({ type: 'agent_update', sessionId, subAgents: rest });
+  }, SUB_DONE_MS);
+  return list.map((s) => (s === target ? { ...s, status: 'done' } : s));
+}
 
 /**
  * แปลง payload ของ Claude Code hook → AgentEvent
@@ -44,43 +91,78 @@ function translateHook(h) {
 
   const tool = h.tool_name;
   const input = h.tool_input ?? {};
+  // activity เป็นตัวหลัก → status หาจากตารางเดียวกันเสมอ จะได้ไม่ขัดกัน
+  const ev = (activity, extra = {}) => ({ ...base, activity, status: ACTIVITY_STATUS[activity], ...extra });
 
   switch (h.hook_event_name) {
     case 'SessionStart':
-      return { ...base, status: 'idle', file: '' };
+      return ev('idle', { file: '', tool: '' });
 
     case 'UserPromptSubmit':
-      return { ...base, status: 'thinking', task: short(h.prompt?.split('\n')[0]) || project };
+      return ev('planning', { task: short(h.prompt?.split('\n')[0]) || project, tool: '' });
 
     case 'PreToolUse': {
-      if (EDIT_TOOLS.has(tool)) {
-        return { ...base, status: 'coding', file: input.file_path ?? input.notebook_path ?? '' };
-      }
+      const t = { tool: tool ?? '' };
+      if (EDIT_TOOLS.has(tool)) return ev('writing', { ...t, file: input.file_path ?? input.notebook_path ?? '' });
       if (tool === 'Bash') {
         const cmd = String(input.command ?? '');
-        return { ...base, status: TEST_CMD.test(cmd) ? 'testing' : 'coding', file: short(`$ ${cmd}`, 70) };
+        return ev(TEST_CMD.test(cmd) ? 'testing' : 'running', { ...t, file: short(`$ ${cmd}`, 70) });
       }
-      if (READ_TOOLS.has(tool)) {
-        return { ...base, status: 'thinking', file: input.file_path ?? input.pattern ?? input.path ?? '' };
+      if (READ_TOOLS.has(tool)) return ev('reading', { ...t, file: input.file_path ?? input.path ?? '' });
+      if (SEARCH_TOOLS.has(tool)) return ev('searching', { ...t, file: input.pattern ?? input.query ?? input.path ?? '' });
+      if (WEB_TOOLS.has(tool)) return ev('web', { ...t, file: short(input.url ?? input.query ?? '', 70) });
+      if (DELEGATE_TOOLS.has(tool)) {
+        const sub = {
+          id: h.tool_use_id ?? `sub-${++subSeq}`,
+          type: input.subagent_type ?? 'general-purpose',
+          task: short(input.description ?? input.prompt ?? '', 70) ?? '',
+          status: 'running',
+          background: input.run_in_background === true,
+        };
+        const subAgents = [...subsOf(sessionId).filter((s) => s.id !== sub.id), sub].slice(-MAX_SUBS);
+        return ev('delegating', { ...t, file: short(input.description ?? input.subagent_type ?? '', 70), subAgents });
       }
-      return { ...base, status: 'coding', file: tool ?? '' };
+      if (PLAN_TOOLS.has(tool)) return ev('planning', { ...t, file: '' });
+      if (ASK_TOOLS.has(tool)) return ev('waiting', { ...t, file: 'ถามคำถามผู้ใช้' });
+      // tool อื่น ๆ (เช่น MCP) → ถือว่ากำลังรันเครื่องมือ
+      return ev('running', { ...t, file: tool ?? '' });
     }
 
     case 'PostToolUse': {
       const r = h.tool_response;
       const failed = r && typeof r === 'object' && (r.is_error === true || r.success === false || r.interrupted === true);
-      return failed ? { ...base, status: 'error' } : null;
+      // sub-agent ทำงานเสร็จ (ตัวที่รันเบื้องหลัง tool จะคืนค่าทันที → ยังไม่ถือว่าเสร็จ รอ SubagentStop)
+      const subAgents = DELEGATE_TOOLS.has(tool)
+        ? finishSub(sessionId, (s) => !s.background && (!h.tool_use_id || s.id === h.tool_use_id))
+        : null;
+      const extra = subAgents ? { subAgents } : {};
+      if (failed) return ev('failed', { tool: tool ?? '', ...extra });
+      return subAgents ? { ...base, ...extra } : null;
     }
 
-    case 'PostToolUseFailure':
-      return { ...base, status: 'error' };
+    case 'PostToolUseFailure': {
+      const subAgents = DELEGATE_TOOLS.has(tool)
+        ? finishSub(sessionId, (s) => !h.tool_use_id || s.id === h.tool_use_id)
+        : null;
+      return ev('failed', { tool: tool ?? '', ...(subAgents ? { subAgents } : {}) });
+    }
+
+    case 'SubagentStop': {
+      // ตัวที่รันเบื้องหลังเสร็จ: จับคู่ด้วยชนิด (agent_type) ถ้า payload มีมา ไม่งั้นเอาตัวเบื้องหลังที่เก่าสุด
+      const type = h.agent_type ?? h.subagent_type;
+      const subAgents =
+        (type && finishSub(sessionId, (s) => s.background && s.type === type)) ||
+        finishSub(sessionId, (s) => s.background);
+      return subAgents ? { ...base, subAgents } : null;
+    }
 
     case 'Notification':
-      // ส่วนใหญ่คือ "รออนุญาต" หรือ "รอ input" → ถือเป็นสแตนด์บาย
-      return { ...base, status: 'idle', file: short(h.message, 70) ?? '' };
+      // ส่วนใหญ่คือ "รออนุญาต" หรือ "รอ input" → ยืนยกมือรอ (ไม่เดินเล่น)
+      return ev('waiting', { file: short(h.message, 70) ?? '', tool: '' });
 
     case 'Stop':
-      return { ...base, status: 'success' };
+      // จบเทิร์น: sub-agent ที่ค้างอยู่ (ไม่ใช่ตัวเบื้องหลัง) ถือว่าจบไปแล้ว
+      return ev('done', { tool: '', subAgents: subsOf(sessionId).filter((s) => s.background && s.status === 'running') });
 
     case 'SessionEnd':
       return { type: 'agent_remove', sessionId };
@@ -97,7 +179,8 @@ function applyAndBroadcast(ev) {
 
   const data = JSON.stringify({ ...ev, ts: Date.now() });
   for (const client of wss.clients) if (client.readyState === 1) client.send(data);
-  console.log(`[bridge] ${ev.type} ${ev.sessionId.slice(0, 8)} ${ev.status ?? ''} ${ev.file ?? ''}`);
+  const subs = ev.subAgents ? ` sub×${ev.subAgents.length}` : '';
+  console.log(`[bridge] ${ev.type} ${ev.sessionId.slice(0, 8)} ${ev.status ?? ''}/${ev.activity ?? ''} ${ev.file ?? ''}${subs}`);
 }
 
 function readBody(req) {
