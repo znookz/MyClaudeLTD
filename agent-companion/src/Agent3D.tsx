@@ -8,7 +8,9 @@ import SuccessEffect from './SuccessEffect';
 import { ACTIVITY_ICON } from './components/activityIcons';
 import { ACTIVITY_META, STATUS_META, type AgentState } from './types';
 import type { Placement } from './utils/layout';
-import { DOOR, POIS, claimPoi, findPath, releasePoi, type Vec3 } from './utils/office';
+import { bumpStat } from './utils/stats';
+import { DOOR, POIS, claimPoi, findPath, markPoiPlaying, releasePoi, type Vec3 } from './utils/office';
+import { racingTelemetry } from './utils/racingGame';
 import { HAT_LIFT, type Outfit } from './utils/outfits';
 import { authorColor } from './utils/people';
 import { registerAnchors, unregisterAnchors } from './utils/registry';
@@ -42,8 +44,9 @@ const DIM_OPACITY = 0.2;
 const WALK_SPEED = 1.7; // หน่วย/วินาที
 const STRIDE_RATE = 5.2; // เฟสก้าวเดิน (rad) ต่อหน่วยระยะทาง
 const SIT_DROP = 0.3; // ตัวลดลงเท่าไรตอนนั่ง
-const LEAVE_MS = 5 * 60_000; // สำเร็จค้างไว้นานเท่านี้ แล้วเดินออกจากห้องไป
+const LEAVE_MS = 10 * 60_000; // สำเร็จค้างไว้นานเท่านี้ แล้วเดินออกจากห้องไป
 const EXIT_DEST = { position: DOOR.spawn, lookAt: null, pose: 'stand' } as const;
+const FATIGUE_FULL_MS = 8 * 60_000; // ทำงานต่อเนื่องเท่านี้ = เหนื่อยเต็มที่ (ใช้เลือกจุดพัก + ความนานของการพัก)
 const CELEBRATE_MS = 60_000; // ฉลองความสำเร็จนานเท่านี้ แล้วกลับไปยืนท่าสแตนด์บาย (ป้ายยังเป็น "สำเร็จ")
 
 interface Dest {
@@ -77,7 +80,7 @@ function Agent3D({
   const statusColor = STATUS_META[status].color;
   // สำเร็จครบ ~1 นาทีแล้ว: สถานะ/สี/ป้ายยังเป็น success แต่ท่าทางกลับเป็นแบบสแตนด์บาย
   const [settled, setSettled] = useState(false);
-  // สำเร็จครบ ~5 นาที: เดินออกประตูห้องไป (leaving) → ถึงประตูแล้วหายตัว (gone); มีงานใหม่ก็เดินกลับเข้ามา
+  // สำเร็จครบ ~10 นาที: เดินออกประตูห้องไป (leaving) → ถึงประตูแล้วหายตัว (gone); มีงานใหม่ก็เดินกลับเข้ามา
   const [leaving, setLeaving] = useState(false);
   const [gone, setGone] = useState(false);
   useEffect(() => {
@@ -134,6 +137,7 @@ function Agent3D({
   const magnifier = useRef<THREE.Group>(null);
   const cue = useRef<THREE.Group>(null);
   const gamepad = useRef<THREE.Mesh>(null);
+  const cup = useRef<THREE.Group>(null);
   const globe = useRef<THREE.Group>(null);
   const pingRing = useRef<THREE.Mesh>(null);
   const pingMat = useRef<THREE.MeshBasicMaterial>(null);
@@ -158,7 +162,30 @@ function Agent3D({
     wanderDest: null as Dest | null,
     nextWanderAt: 2 + Math.random() * 3,
     leaveAt: 0,
+    // ---- อารมณ์ (ใช้เลือกจุดพัก) ----
+    lastPoi: -1,
+    lastWork: 'idle' as string,
+    workMs: 0, // เวลาทำงานสะสมตั้งแต่พักครั้งก่อน
+    workStart: 0, // 0 = ไม่ได้ทำงานอยู่
+    stress: 0,
   });
+  // จับอารมณ์จาก activity: ทำงานต่อเนื่อง → เหนื่อย · failed → เครียด
+  useEffect(() => {
+    const a = anim.current;
+    const now = Date.now();
+    const working = status === 'thinking' || status === 'coding' || status === 'testing' || status === 'error';
+    if (working) {
+      if (!a.workStart) a.workStart = now;
+      a.lastWork = activity;
+      if (activity === 'failed') a.stress = Math.min(1, a.stress + 0.34);
+    } else {
+      if (a.workStart) {
+        a.workMs += now - a.workStart;
+        a.workStart = 0;
+      }
+      if (status === 'success') a.lastWork = 'done';
+    }
+  }, [status, activity]);
   const eyeMaterial = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
@@ -243,8 +270,17 @@ function Agent3D({
       a.leaveAt = 0;
     } else {
       if (a.wanderDest && a.arrived && a.leaveAt === 0) {
-        // ยืนอยู่สักพัก (ในห้องพักผ่อนเล่นนานกว่า)
-        a.leaveAt = t + (a.poi >= 0 && POIS[a.poi].lounge ? 12 + Math.random() * 14 : 4 + Math.random() * 6);
+        // นับสถิติ: มาถึงจุดพักผ่อน/ร้านกาแฟ
+        if (a.poi >= 0 && !mini) {
+          if (POIS[a.poi].act === 'coffee') bumpStat('coffee');
+          if (POIS[a.poi].lounge) bumpStat('breaks');
+        }
+        // ยืนอยู่สักพัก (ในห้องพักผ่อนเล่นนานกว่า; เหนื่อย/เครียดมาก → พักนานขึ้นถึง ~2 เท่า)
+        const need = 1 + Math.max(Math.min(1, a.workMs / FATIGUE_FULL_MS), a.stress);
+        a.leaveAt = t + (a.poi >= 0 && POIS[a.poi].lounge ? 12 + Math.random() * 14 : 4 + Math.random() * 6) * need;
+        // พักแล้ว → ความเหนื่อยลดลงครึ่งหนึ่ง ความเครียดหาย
+        a.workMs *= 0.5;
+        a.stress = 0;
       }
       if (a.wanderDest && a.arrived && t >= a.leaveAt) {
         releasePoi(sessionId);
@@ -254,10 +290,16 @@ function Agent3D({
         a.nextWanderAt = Math.random() < 0.5 ? t : t + 3 + Math.random() * 5; // ไปที่ใหม่เลย หรือกลับไปยืนรอที่โต๊ะ
       }
       if (!a.wanderDest && a.arrived && t >= a.nextWanderAt) {
-        const idx = claimPoi(sessionId);
+        const idx = claimPoi(sessionId, {
+          last: a.lastWork,
+          fatigue: Math.min(1, a.workMs / FATIGUE_FULL_MS),
+          stress: a.stress,
+          lastPoi: a.lastPoi,
+        });
         if (idx >= 0) {
           const poi = POIS[idx];
           a.poi = idx;
+          a.lastPoi = idx;
           a.wanderDest = { position: poi.stand, lookAt: poi.lookAt, pose: poi.pose };
         } else {
           a.nextWanderAt = t + 4;
@@ -437,9 +479,11 @@ function Agent3D({
 
     // ===== 5.1) ท่าเล่นในห้องพักผ่อน (ถึงจุดแล้วเท่านั้น และยังว่างอยู่) =====
     const act = pose === 'idle' && wander && a.wanderDest && a.arrived && a.poi >= 0 ? POIS[a.poi].act : undefined;
+    if (act && a.poi >= 0) markPoiPlaying(a.poi); // จอเกมเดินเฉพาะตอนมีคนเล่น
     let lean = 0; // เอนตัวไปข้างหน้า
-    let buzz = 0; // สั่นเบา ๆ (เก้าอี้นวด)
+    let buzz = 0; // สั่นเบา ๆ (ตัวสั่นตอนขับ rig)
     let cueSlide = 0;
+    let sip = 0; // จังหวะยกแก้วกาแฟจิบ 0..1
     if (act === 'arcade') {
       // ตู้เกม: มือซ้ายโยกจอยสติ๊ก มือขวากดปุ่มรัว
       bodyYaw = Math.sin(t * 2.3) * 0.07;
@@ -467,18 +511,29 @@ function Agent3D({
       rx = -0.95 + Math.sin(t * 19 + 1) * 0.05;
       lz = 0.42;
       rz = -0.42;
-    } else if (act === 'massage') {
-      // เก้าอี้นวด: เอนหลัง เงยหน้า วางแขนบนที่พักแขน ตัวสั่นเบา ๆ
-      bodyYaw = 0;
-      headPitch = -0.26;
-      headTiltZ = Math.sin(t * 0.7) * 0.06;
-      lx = -0.85;
-      rx = -0.85;
-      lz = -0.12;
-      rz = 0.12;
-      buzz = Math.sin(t * 46) * 0.01;
-      bobAmp = 0.02;
+    } else if (act === 'racing') {
+      // Racing Rig: มือจับพวงมาลัย ตัวโยกตามโค้งจริงของเกม · ตอนเปลี่ยนเกียร์ มือซ้ายเอื้อมไปแตะคันเกียร์
+      const T = racingTelemetry;
+      const sh = Math.sin(Math.min(1, T.shiftPulse) * Math.PI); // 0→1→0 ช่วงเปลี่ยนเกียร์
+      bodyYaw = T.steer * 0.1;
+      headPitch = 0.05;
+      headTiltZ = T.steer * -0.08;
+      lx = -1.1 + sh * 0.45 + Math.sin(t * 9) * 0.01;
+      lz = 0.3 + sh * 0.35;
+      rx = -1.1 - T.steer * 0.12;
+      rz = -0.3;
+      buzz = Math.sin(t * 40) * 0.004 * (0.3 + T.kmh / 200);
+      bobAmp = 0.01;
       bobSpeed = 9;
+    } else if (act === 'coffee') {
+      // ร้านกาแฟ: ถือแก้วด้วยมือขวา จิบเป็นพัก ๆ (ยกแขนขึ้น เงยหน้าเล็กน้อย)
+      sip = Math.pow(Math.max(0, Math.sin(t * 0.8)), 2);
+      bodyYaw = Math.sin(t * 0.5) * 0.08;
+      headPitch = -0.08 - sip * 0.18;
+      lx = -0.4;
+      lz = 0.1;
+      rx = -0.95 - sip * 0.75;
+      rz = -0.12;
     } else if (act === 'sofa') {
       bodyYaw = Math.sin(t * 0.4) * 0.12;
       headPitch = -0.1;
@@ -575,6 +630,10 @@ function Agent3D({
       cue.current.position.z = 0.42 + cueSlide * 0.16;
     }
     if (gamepad.current) gamepad.current.visible = act === 'console';
+    if (cup.current) {
+      cup.current.visible = act === 'coffee';
+      cup.current.position.set(0.3, -0.05 + sip * 0.3, 0.46 - sip * 0.12);
+    }
     if (globe.current) {
       globe.current.visible = activity === 'web';
       globe.current.rotation.y += dt * 1.8;
@@ -610,7 +669,7 @@ function Agent3D({
     }
     const blinkPhase = (t - a.blinkStart) / 0.14;
     const blink = blinkPhase >= 0 && blinkPhase < 1 ? 0.1 + Math.abs(blinkPhase * 2 - 1) * 0.9 : 1;
-    const mood = pose === 'success' ? 0.45 : status === 'error' ? 0.6 : act === 'massage' ? 0.22 : 1; // ยิ้มตาหยี / ตาหรี่ / หลับตาพริ้ม
+    const mood = pose === 'success' ? 0.45 : status === 'error' ? 0.6 : 1; // ยิ้มตาหยี / ตาหรี่ / หลับตาพริ้ม
     const eyeScale = blink * mood * (1 + level * 0.3);
     if (eyeL.current && eyeR.current) {
       eyeL.current.scale.y = eyeScale;
@@ -799,6 +858,18 @@ function Agent3D({
             <boxGeometry args={[0.36, 0.07, 0.16]} />
             <meshStandardMaterial color="#1f2937" emissive="#a78bfa" emissiveIntensity={0.5} roughness={0.5} />
           </mesh>
+
+          {/* ---------- แก้วกาแฟ (ร้านกาแฟ) ---------- */}
+          <group ref={cup} position={[0.3, -0.05, 0.46]} visible={false}>
+            <mesh>
+              <cylinderGeometry args={[0.07, 0.055, 0.14, 14]} />
+              <meshStandardMaterial color="#f8fafc" roughness={0.5} />
+            </mesh>
+            <mesh position={[0, 0.062, 0]}>
+              <cylinderGeometry args={[0.062, 0.062, 0.016, 14]} />
+              <meshStandardMaterial color="#7c4a2a" roughness={0.4} />
+            </mesh>
+          </group>
 
           {/* ---------- คีย์บอร์ดโฮโลแกรม (coding) ---------- */}
           <group ref={keyboard} position={[0, -0.18, 0.62]} rotation={[-1.05, 0, 0]} visible={false}>

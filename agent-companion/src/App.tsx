@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Stars } from '@react-three/drei';
-import { Radio } from 'lucide-react';
+import { OrbitControls } from '@react-three/drei';
+import { Building2, Camera, Coffee, Crosshair, Gamepad2, Maximize2, Radio, RotateCw, Route } from 'lucide-react';
+import FollowCam from './FollowCam';
+import ReadySignal from './ReadySignal';
+import CameraRig, { type CamView } from './CameraRig';
+import SkyRig from './SkyRig';
+import SettingsBar from './components/SettingsBar';
+import StatsPanel from './components/StatsPanel';
+import Toasts from './components/Toasts';
+import { useAgentAlerts } from './hooks/useAgentAlerts';
+import { useSceneSettings } from './utils/sceneSettings';
 import Agent3D from './Agent3D';
 import CollabBeam from './CollabBeam';
 import Office from './Office';
+import KeyboardPan from './KeyboardPan';
 import DetailPanel from './components/DetailPanel';
 import SessionTable from './components/SessionTable';
 import SimulatorPanel, { type LogEntry } from './components/SimulatorPanel';
@@ -31,6 +41,15 @@ import {
   subKey,
 } from './utils/layout';
 import { DESKS } from './utils/office';
+
+/** มุมกล้องสำเร็จรูป (ปุ่มลัดบนฉาก 3 มิติ) */
+const CAM_VIEWS: { id: string; label: string; icon: typeof Camera; pos: [number, number, number]; target: [number, number, number] }[] = [
+  { id: 'all', label: 'ภาพรวม', icon: Camera, pos: [0, 17, 28], target: [0.5, 0.8, 0] },
+  { id: 'office', label: 'ห้องทำงาน', icon: Building2, pos: [0, 12, 12], target: [0, 0.4, -1.2] },
+  { id: 'lounge', label: 'ห้องพักผ่อน', icon: Gamepad2, pos: [-12.5, 10, 10], target: [-12.5, 0.4, -0.5] },
+  { id: 'cafe', label: 'ร้านกาแฟ', icon: Coffee, pos: [14, 8, 9], target: [14, 0.4, -1.2] },
+  { id: 'street', label: 'ถนน', icon: Route, pos: [-4, 6, 24], target: [-4, 0.5, 12] },
+];
 import { OUTFITS, assignOutfits } from './utils/outfits';
 import { playMumble, playSuccessJingle, setMuted, unlockAudio, voicePitchFor } from './utils/sound';
 
@@ -160,6 +179,24 @@ export default function App() {
   const [soundOn, setSoundOn] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [scriptRunning, setScriptRunning] = useState(false);
+  const [camView, setCamView] = useState<CamView>({ id: 'all', pos: [0, 17, 28], target: [0.5, 0.8, 0], n: 0 });
+  const [autoRotate, setAutoRotate] = useState(false);
+  const settings = useSceneSettings();
+  const sceneBox = useRef<HTMLDivElement>(null);
+  const [followId, setFollowId] = useState<string | null>(null);
+  // หน้าจอโหลด: ซ่อนเมื่อฉากวาดเฟรมแรก ๆ เสร็จ (เปลี่ยนโหมดประหยัดเครื่อง → Canvas สร้างใหม่ → โชว์อีกครั้ง)
+  const canvasKey = settings.low ? 'low' : 'high';
+  const [readyKey, setReadyKey] = useState<string | null>(null);
+  const goView = (id: string) => {
+    const v = CAM_VIEWS.find((c) => c.id === id);
+    setFollowId(null);
+    if (v) setCamView({ id, pos: v.pos, target: v.target, n: Date.now() });
+  };
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setFollowId(null);
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  }, []);
   const scriptTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const logSeq = useRef(0);
 
@@ -472,37 +509,46 @@ export default function App() {
   const panelAgent = agents.find((a) => a.sessionId === selectedId) ?? agents[0];
   const panelIndex = panelAgent ? agents.indexOf(panelAgent) + 1 : 0;
   const live = SOCKET_PILL[socketStatus];
+  const alerts = useAgentAlerts(agents, { notify: settings.notify, sound: soundOn });
 
   const filterPills: { key: AgentStatus | 'all'; label: string; color: string; count: number }[] = [
-    { key: 'all', label: 'ทั้งหมด', color: '#E6EBF2', count: agents.length },
+    { key: 'all', label: 'ทั้งหมด', color: '#7c5cbf', count: agents.length },
     ...AGENT_STATUSES.map((s) => ({ key: s, label: STATUS_META[s].label, color: STATUS_META[s].color, count: counts[s] })),
   ];
 
   return (
-    <div className="min-h-screen bg-[#0B0F17] px-[clamp(16px,3vw,40px)] pb-12 pt-7 text-[#E6EBF2]">
+    <div className="min-h-screen bg-[#fbf3f7] px-[clamp(16px,3vw,40px)] pb-12 pt-7 text-[#3d2f4f]">
       <div className="mx-auto flex max-w-[1440px] flex-col gap-5">
         {/* ===================== Header ===================== */}
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div className="flex flex-col gap-1">
-            <div className="font-mono text-xs tracking-[0.08em] text-[#93A0B4]">CLAUDE CODE · LOCAL</div>
+            <div className="font-mono text-xs tracking-[0.08em] text-[#8b7a9b]">CLAUDE CODE · LOCAL</div>
             <h1 className="m-0 text-[32px] font-bold leading-tight tracking-[-0.01em]">Agent Floor</h1>
-            <p className="m-0 text-[15px] text-[#93A0B4]">
+            <p className="m-0 text-[15px] text-[#8b7a9b]">
               ห้องทำงาน + ห้องพักผ่อน 3 มิติของ agent — ดูว่าแต่ละ session กำลังทำอะไร เรียก sub-agent กี่ตัว และใครเป็นคนสั่ง
             </p>
           </div>
-          <div className="flex items-center gap-2.5 rounded-full border border-[#263247] bg-[#131A26] px-3.5 py-2 text-[13px] text-[#B7C2D3]">
-            <span
-              className={`inline-block h-2 w-2 rounded-full ${live.pulse ? 'animate-pulse' : ''}`}
-              style={{ background: live.color }}
-            />
-            <span>
-              {live.label} · {agents.length} sessions · {peopleCount} คน
-            </span>
+          <div className="flex flex-col items-start gap-2 sm:items-end">
+            <div className="flex items-center gap-2.5 rounded-full border border-[#eadbea] bg-white px-3.5 py-2 text-[13px] text-[#6b5a7d]">
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${live.pulse ? 'animate-pulse' : ''}`}
+                style={{ background: live.color }}
+              />
+              <span>
+                {live.label} · {agents.length} sessions · {peopleCount} คน
+              </span>
+              {alerts.pending > 0 && (
+                <span className="rounded-full bg-[#ffe3e8] px-2 py-0.5 text-xs font-semibold text-[#d6455d]">
+                  {alerts.pending} รอคุณ/ผิดพลาด
+                </span>
+              )}
+            </div>
+            <SettingsBar />
           </div>
         </header>
 
         {/* ===================== ตัวกรองสถานะ ===================== */}
-        <nav aria-label="กรองตามสถานะ" className="flex flex-wrap gap-2">
+        <nav aria-label="กรองตามสถานะ" className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 sm:flex-wrap sm:overflow-visible">
           {filterPills.map((p) => {
             const active = filter === p.key;
             return (
@@ -511,15 +557,15 @@ export default function App() {
                 key={p.key}
                 onClick={() => setFilter(p.key)}
                 aria-pressed={active}
-                className={`inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-full border px-3.5 text-[13.5px] font-medium transition ${
+                className={`inline-flex min-h-10 shrink-0 cursor-pointer items-center gap-2 rounded-full border px-3.5 text-[13.5px] font-medium transition ${
                   active
-                    ? 'border-[#E6EBF2] bg-[#E6EBF2] text-[#0B0F17]'
-                    : 'border-[#263247] bg-[#131A26] text-[#E6EBF2] hover:border-[#3A4864]'
+                    ? 'border-[#7c5cbf] bg-[#7c5cbf] text-white'
+                    : 'border-[#eadbea] bg-white text-[#3d2f4f] hover:border-[#cdb3d6]'
                 }`}
               >
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ background: p.key === 'all' && active ? '#0B0F17' : p.color }}
+                  style={{ background: p.key === 'all' && active ? '#ffffff' : p.color }}
                 />
                 <span>{p.label}</span>
                 <span className="font-mono text-xs opacity-75">{p.count}</span>
@@ -532,35 +578,22 @@ export default function App() {
       {/* ===================== 3D Scene ===================== */}
       <section
         aria-label="ห้องทำงาน 3 มิติ"
-        className="min-w-0 flex-[999_1_640px] overflow-hidden rounded-[18px] border border-[#263247] bg-[#0F141E]"
+        className="min-w-0 flex-[999_1_640px] overflow-hidden rounded-[18px] border border-[#eadbea] bg-[#fff8fb]"
       >
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1E2838] px-[18px] py-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#f0e3ef] px-[18px] py-3.5">
           <div className="text-sm font-semibold">ฉาก 3 มิติ · {agents.length} agents</div>
-          <div className="text-[13px] text-[#93A0B4]">คลิกที่หุ่นเพื่อดูรายละเอียด · ลากเพื่อหมุนกล้อง · คลิกขวาลากเพื่อเลื่อน</div>
+          <div className="hidden text-[13px] text-[#8b7a9b] sm:block">คลิกที่หุ่นเพื่อดูรายละเอียด · ลากหมุนกล้อง · คลิกขวาลากเลื่อน · ลูกศร = เลื่อนกล้อง · 🐱🐶 คลิกเพื่อทักทาย</div>
         </div>
-        <div className="relative h-[min(660px,72vh)] min-h-[420px]">
+        <div ref={sceneBox} className="relative h-[min(660px,72vh)] min-h-[420px] bg-[#f3e6ef]">
         <Canvas
-          shadows
-          dpr={[1, 2]}
-          camera={{ position: [-4, 13, 20.5], fov: 45 }}
+          key={canvasKey}
+          shadows={!settings.low}
+          dpr={settings.low ? [1, 1] : [1, 2]}
+          gl={{ antialias: !settings.low, powerPreference: settings.low ? 'low-power' : 'high-performance' }}
+          camera={{ position: [0, 17, 28], fov: 45 }}
           onPointerMissed={() => setSelectedId(null)}
         >
-          <color attach="background" args={['#0F141E']} />
-          <fog attach="fog" args={['#0F141E', 38, 80]} />
-          <ambientLight intensity={0.55} />
-          <hemisphereLight args={['#bcd7ff', '#1a2236', 0.7]} />
-          <directionalLight
-            position={[6, 14, 9]}
-            intensity={1.5}
-            castShadow
-            shadow-mapSize={[4096, 4096]}
-            shadow-camera-left={-22}
-            shadow-camera-right={14}
-            shadow-camera-top={14}
-            shadow-camera-bottom={-14}
-            shadow-bias={-0.0005}
-          />
-          <Stars radius={80} depth={40} count={1800} factor={3} fade speed={0.6} />
+          <SkyRig />
 
           <Office deskStatus={deskStatus} activeSpots={activeSpots} />
 
@@ -599,17 +632,108 @@ export default function App() {
 
           <OrbitControls
             makeDefault
-            target={[-4, 0.8, 0]}
+            target={[0.5, 0.8, 0]}
             minDistance={5}
-            maxDistance={42}
+            maxDistance={80}
             maxPolarAngle={Math.PI / 2.1}
+            autoRotate={autoRotate}
+            autoRotateSpeed={0.6}
+            enableDamping
           />
+          <CameraRig view={camView} />
+          <FollowCam id={followId} onLost={() => setFollowId(null)} />
+          <ReadySignal onReady={() => setReadyKey(canvasKey)} />
+          <KeyboardPan />
         </Canvas>
+
+        {/* หน้าจอโหลด */}
+        <div
+          aria-hidden={readyKey === canvasKey}
+          className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-[#f6e9f1] transition-opacity duration-700 ${
+            readyKey === canvasKey ? 'opacity-0' : 'opacity-100'
+          }`}
+        >
+          <div className="size-10 animate-spin rounded-full border-4 border-[#e4d3ea] border-t-[#7c5cbf]" />
+          <div className="text-sm font-medium text-[#6b5a7d]">กำลังเตรียมออฟฟิศ…</div>
+          <div className="text-xs text-[#8b7a9b]">🐱 🐶 กำลังตื่นนอน</div>
+        </div>
+
+        {/* ผู้ใช้กำลังตามตัวไหนอยู่ */}
+        {followId && (
+          <div className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/70 bg-white/80 py-1 pl-3 pr-1 text-[12.5px] text-[#5b4a6e] shadow-[0_4px_16px_rgba(120,90,140,0.25)] backdrop-blur">
+            <Crosshair size={14} className="text-[#7c5cbf]" />
+            กำลังตาม {agents.find((a) => a.sessionId === followId)?.task || followId.slice(0, 8)}
+            <button
+              type="button"
+              onClick={() => setFollowId(null)}
+              className="cursor-pointer rounded-full border-0 bg-[#7c5cbf] px-2.5 py-1 text-xs font-medium text-white hover:bg-[#6a4aae]"
+            >
+              หยุดตาม (Esc)
+            </button>
+          </div>
+        )}
+
+        {/* แถบมุมกล้อง */}
+        <div className="absolute bottom-3 left-1/2 z-10 flex max-w-[calc(100%-24px)] -translate-x-1/2 flex-wrap items-center justify-center gap-1 rounded-2xl border border-white/60 bg-white/70 p-1.5 shadow-[0_6px_24px_rgba(120,90,140,0.25)] backdrop-blur">
+          {CAM_VIEWS.map((v) => {
+            const Icon = v.icon;
+            const on = camView.id === v.id && camView.n !== 0;
+            return (
+              <button
+                key={v.id}
+                type="button"
+                onClick={() => goView(v.id)}
+                aria-label={v.label}
+                title={v.label}
+                aria-pressed={on}
+                className={`inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-xl px-2.5 text-[12.5px] font-medium transition sm:px-3 ${
+                  on ? 'bg-[#7c5cbf] text-white' : 'text-[#5b4a6e] hover:bg-[#7c5cbf]/10'
+                }`}
+              >
+                <Icon size={14} />
+                <span className="hidden sm:inline">{v.label}</span>
+              </button>
+            );
+          })}
+          <span className="mx-1 h-5 w-px bg-[#5b4a6e]/20" />
+          <button
+            type="button"
+            disabled={!selectedId && !followId}
+            onClick={() => setFollowId((cur) => (cur ? null : selectedId))}
+            aria-pressed={!!followId}
+            aria-label="ตามตัวที่เลือก" title={selectedId ? 'ให้กล้องตาม Agent ที่เลือก' : 'คลิกเลือก Agent ก่อน แล้วกดปุ่มนี้เพื่อให้กล้องตาม'}
+            className={`inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-xl px-3 text-[12.5px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              followId ? 'bg-[#7c5cbf] text-white' : 'text-[#5b4a6e] hover:bg-[#7c5cbf]/10'
+            }`}
+          >
+            <Crosshair size={14} />
+            <span className="hidden sm:inline">ตามตัวที่เลือก</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAutoRotate((v) => !v)}
+            aria-pressed={autoRotate}
+            title="หมุนกล้องอัตโนมัติ"
+            className={`inline-flex size-9 cursor-pointer items-center justify-center rounded-xl transition ${
+              autoRotate ? 'bg-[#7c5cbf] text-white' : 'text-[#5b4a6e] hover:bg-[#7c5cbf]/10'
+            }`}
+          >
+            <RotateCw size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => (document.fullscreenElement ? document.exitFullscreen() : sceneBox.current?.requestFullscreen())}
+            title="เต็มจอ"
+            className="inline-flex size-9 cursor-pointer items-center justify-center rounded-xl text-[#5b4a6e] transition hover:bg-[#7c5cbf]/10"
+          >
+            <Maximize2 size={15} />
+          </button>
+        </div>
 
         {/* Overlay: กลุ่มร่วมงาน */}
         <div className="pointer-events-none absolute left-4 top-4 flex flex-col gap-2">
           {groups.size > 0 && (
-            <div className="flex w-fit items-center gap-1.5 rounded-full bg-cyan-500/15 px-2.5 py-1 text-[11px] text-cyan-300">
+            <div className="flex w-fit items-center gap-1.5 rounded-full bg-cyan-500/15 px-2.5 py-1 text-[11px] text-cyan-600">
               <Radio size={12} className="animate-pulse" />
               {groups.size} กลุ่มกำลังร่วมงาน · {[...groups.values()].reduce((n, g) => n + g.length, 0)} agents
             </div>
@@ -618,15 +742,15 @@ export default function App() {
 
         {agents.length === 0 && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
-            <div className="max-w-sm rounded-2xl border border-white/10 bg-slate-900/70 p-5 text-center text-sm text-slate-300 backdrop-blur">
-              ยังไม่มี Agent ในฉาก — รอ event จาก <span className="font-mono text-sky-300">{WS_URL}</span>
+            <div className="max-w-sm rounded-2xl border border-[#eadbea] bg-white/85 p-5 text-center text-sm text-[#6b5a7d] backdrop-blur">
+              ยังไม่มี Agent ในฉาก — รอ event จาก <span className="font-mono text-sky-600">{WS_URL}</span>
               <br />
-              หรือกด <b className="text-white">“เล่นสคริปต์ทีม 3 ตัว”</b> ที่แผงด้านขวา
+              หรือกด <b className="text-[#7c5cbf]">“เล่นสคริปต์ทีม 3 ตัว”</b> ที่แผงด้านขวา
             </div>
           </div>
         )}
         </div>
-        <div className="flex flex-wrap gap-x-[18px] gap-y-2 border-t border-[#1E2838] px-[18px] pb-4 pt-3 text-[12.5px] text-[#93A0B4]">
+        <div className="flex flex-wrap gap-x-[18px] gap-y-2 border-t border-[#f0e3ef] px-[18px] pb-4 pt-3 text-[12.5px] text-[#8b7a9b]">
           <span className="flex items-center gap-2">
             <span className="inline-block h-2.5 w-2.5 rounded-full bg-[#38bdf8] shadow-[0_0_8px_#38bdf8]" />
             ไฟเสาอากาศ = สถานะ session
@@ -648,8 +772,12 @@ export default function App() {
             ชุดแต่งตัว = ประจำตัวแต่ละ session
           </span>
           <span className="flex items-center gap-2">
-            <span className="inline-block h-2.5 w-[18px] rounded-full border-2 border-[#E6EBF2]" />
+            <span className="inline-block h-2.5 w-[18px] rounded-full border-2 border-[#7c5cbf]" />
             วงขาว = session ที่เลือก
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="text-[13px] leading-none">☕</span>
+            Agent ที่ว่างอยู่ไปพักผ่อน/ร้านกาแฟได้ · ออกจากออฟฟิศหลังสำเร็จ 10 นาที
           </span>
         </div>
       </section>
@@ -664,6 +792,7 @@ export default function App() {
         onSetStatus={setStatus}
         onRemove={(id) => sim({ type: 'agent_remove', sessionId: id })}
       />
+      <StatsPanel />
       <SimulatorPanel
         agents={agents}
         selectedId={selectedId}
@@ -696,6 +825,14 @@ export default function App() {
 
         <SessionTable agents={agents} selectedId={panelAgent?.sessionId ?? null} filter={filter} onSelect={setSelectedId} />
       </div>
+      <Toasts
+        toasts={alerts.toasts}
+        onDismiss={alerts.dismiss}
+        onOpen={(id) => {
+          setSelectedId(id);
+          alerts.dismiss(alerts.toasts.find((t) => t.sessionId === id)?.id ?? -1);
+        }}
+      />
     </div>
   );
 }

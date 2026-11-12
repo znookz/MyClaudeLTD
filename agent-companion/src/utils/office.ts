@@ -24,8 +24,31 @@ export const LOUNGE_ITEMS = {
   tvSofa: { x: -10.8, z: -3.4 },
   wallSofa: { x: -15.85, z: 3.9 },
   lowTable: { x: -14.4, z: 3.9 },
-  massage: [-2.4, -0.6].map((z) => ({ x: -15.7, z })),
+  /** Racing Sim Rig (หันหน้าไป +x: คนขับนั่งที่ x แล้วจอ 3 จออยู่ที่ x+1.4) */
+  racing: [-2.0].map((z) => ({ x: -15.7, z })),
 };
+
+/** ร้านกาแฟ: อยู่ข้างอาคารทางขวา (นอกห้อง) เดินออกทางประตูผนังขวาไปได้ */
+export const CAFE = {
+  deck: { x0: 10.2, x1: 17.8, z0: -6.0, z1: 3.6 },
+  /** ตัวร้าน (ผนังหลัง + เคาน์เตอร์) เป็นสิ่งกีดขวาง */
+  shop: { x0: 10.2, x1: 17.8, z0: -6.5, z1: -3.4 },
+  counter: { x: 14.0, z: -3.75, w: 5.2, d: 0.7 },
+  /** โต๊ะที่ Agent ใช้นั่งได้ (เก้าอี้ซ้าย-ขวาของโต๊ะ ห่าง CHAIR_DX) */
+  tables: [
+    { x: 12.0, z: -0.8 },
+    { x: 15.4, z: -0.8 },
+    { x: 12.0, z: 2.1 },
+  ],
+  /** โต๊ะลูกค้าประจำของร้าน (คนนั่งกินตกแต่ง) */
+  npcTables: [{ x: 15.4, z: 2.1 }],
+  /** จุดยืนสั่งกาแฟหน้าเคาน์เตอร์ */
+  queue: [12.9, 14.7].map((x) => ({ x, z: -2.85 })),
+  barista: { x: 14.0, z: -4.6 },
+  npcQueue: { x: 16.5, z: -2.85 },
+};
+export const CAFE_CHAIR_DX = 0.9;
+export const CAFE_TABLE_R = 0.4;
 
 /** ประตูอยู่ที่ผนังขวา: Agent ใหม่จะเดินเข้ามาจากตรงนี้ */
 export const DOOR = { z: 3.9, spawn: [7.9, 0, 3.9] as Vec3 };
@@ -72,7 +95,7 @@ export const MEETING_TABLE_R = 0.78;
 
 // ---------------- จุดที่ Agent ที่ว่างอยู่จะเดินไปเล่น ----------------
 /** กิจกรรมพิเศษที่จุดนั้น → Agent3D ใช้เลือกท่าทาง */
-export type PoiAct = 'arcade' | 'pool' | 'console' | 'massage' | 'sofa';
+export type PoiAct = 'arcade' | 'pool' | 'console' | 'racing' | 'sofa' | 'coffee';
 
 export interface Poi {
   name: string;
@@ -82,17 +105,19 @@ export interface Poi {
   /** จุดในห้องพักผ่อนถูกสุ่มเลือกบ่อยกว่า และอยู่นานกว่า */
   lounge?: boolean;
   act?: PoiAct;
+  /** จุดยืนทั่วไป (ไม่มี act) — ใช้จับคู่กับ "อารมณ์" ตอนเลือกว่าจะไปไหน */
+  tag?: 'books' | 'coffee-machine' | 'snack' | 'water' | 'board' | 'print';
 }
 
-const { pool, arcades, tvSofa, wallSofa, massage } = LOUNGE_ITEMS;
+const { pool, arcades, tvSofa, wallSofa, racing } = LOUNGE_ITEMS;
 
 export const POIS: Poi[] = [
-  { name: 'ชั้นหนังสือ', stand: [-7.3, 0, -1.4], lookAt: [-9, 0, -1.4], pose: 'stand' },
-  { name: 'เครื่องชงกาแฟ', stand: [-7.3, 0, 0.4], lookAt: [-9, 0, 0.4], pose: 'stand' },
-  { name: 'ตู้ขนม', stand: [-7.3, 0, 1.5], lookAt: [-9, 0, 1.5], pose: 'stand' },
-  { name: 'ตู้น้ำ', stand: [-7.3, 0, 2.45], lookAt: [-9, 0, 2.45], pose: 'stand' },
-  { name: 'ไวต์บอร์ด', stand: [7.5, 0, -1.5], lookAt: [9, 0, -1.5], pose: 'stand' },
-  { name: 'เครื่องปริ้นท์', stand: [7.5, 0, 0.9], lookAt: [9, 0, 0.9], pose: 'stand' },
+  { name: 'ชั้นหนังสือ', stand: [-7.3, 0, -1.4], lookAt: [-9, 0, -1.4], pose: 'stand', tag: 'books' },
+  { name: 'เครื่องชงกาแฟ', stand: [-7.3, 0, 0.4], lookAt: [-9, 0, 0.4], pose: 'stand', tag: 'coffee-machine' },
+  { name: 'ตู้ขนม', stand: [-7.3, 0, 1.5], lookAt: [-9, 0, 1.5], pose: 'stand', tag: 'snack' },
+  { name: 'ตู้น้ำ', stand: [-7.3, 0, 2.45], lookAt: [-9, 0, 2.45], pose: 'stand', tag: 'water' },
+  { name: 'ไวต์บอร์ด', stand: [7.5, 0, -1.5], lookAt: [9, 0, -1.5], pose: 'stand', tag: 'board' },
+  { name: 'เครื่องปริ้นท์', stand: [7.5, 0, 0.9], lookAt: [9, 0, 0.9], pose: 'stand', tag: 'print' },
   // ---------- ห้องพักผ่อน ----------
   ...arcades.map(
     (a, i): Poi => ({
@@ -117,14 +142,14 @@ export const POIS: Poi[] = [
   { name: 'โต๊ะพูล (หน้า)', stand: [pool.x - 0.5, 0, pool.z + 1.4], lookAt: [pool.x - 0.5, 0, pool.z], pose: 'stand', lounge: true, act: 'pool' },
   { name: 'โต๊ะพูล (หลัง)', stand: [pool.x + 0.5, 0, pool.z - 1.4], lookAt: [pool.x + 0.5, 0, pool.z], pose: 'stand', lounge: true, act: 'pool' },
   { name: 'โต๊ะพูล (ซ้าย)', stand: [pool.x - 2.0, 0, pool.z], lookAt: [pool.x, 0, pool.z], pose: 'stand', lounge: true, act: 'pool' },
-  ...massage.map(
+  ...racing.map(
     (m, i): Poi => ({
-      name: `เก้าอี้นวด ${i + 1}`,
+      name: `Racing Rig ${i + 1}`,
       stand: [m.x, 0, m.z],
       lookAt: [0, 0, m.z],
       pose: 'sit',
       lounge: true,
-      act: 'massage',
+      act: 'racing',
     }),
   ),
   ...[-0.55, 0.55].map(
@@ -137,16 +162,100 @@ export const POIS: Poi[] = [
       act: 'sofa',
     }),
   ),
+  // ---------- ร้านกาแฟ ----------
+  ...CAFE.tables.flatMap((t, ti) =>
+    [-1, 1].map(
+      (s): Poi => ({
+        name: `ร้านกาแฟ โต๊ะ ${ti + 1}`,
+        stand: [t.x + s * CAFE_CHAIR_DX, 0, t.z],
+        lookAt: [t.x, 0, t.z],
+        pose: 'sit',
+        lounge: true,
+        act: 'coffee',
+      }),
+    ),
+  ),
+  ...CAFE.queue.map(
+    (q, i): Poi => ({
+      name: `สั่งกาแฟ ${i + 1}`,
+      stand: [q.x, 0, q.z],
+      lookAt: [q.x, 0, -6],
+      pose: 'stand',
+      lounge: true,
+      act: 'coffee',
+    }),
+  ),
 ];
 
 const poiClaims = new Map<number, string>();
 
-/** จองจุดว่างอันใดอันหนึ่ง (สุ่ม) คืน index หรือ -1 ถ้าเต็ม */
-export function claimPoi(sessionId: string): number {
+/** บริบทของหุ่น ณ ตอนที่ว่าง — ใช้ให้เลือกจุดพัก "สมเหตุสมผล" แทนการสุ่มล้วน */
+export interface PoiMood {
+  /** activity ล่าสุดก่อนว่าง (reading/searching/writing/testing/delegating/planning/web/running/done/failed) */
+  last: string;
+  /** 0..1 ความเหนื่อยสะสม (ทำงานต่อเนื่องนานแค่ไหน) */
+  fatigue: number;
+  /** 0..1 ความเครียด (error ที่เจอตั้งแต่พักครั้งก่อน) */
+  stress: number;
+  /** จุดที่เพิ่งไป — เลี่ยงซ้ำ */
+  lastPoi: number;
+}
+
+/** ตัวคูณน้ำหนักของจุด i ตามอารมณ์ (1 = เฉย ๆ) */
+function affinity(poi: Poi, m: PoiMood): number {
+  let w = 1;
+  const rest = poi.lounge === true;
+  // เหนื่อย → ห้องพักผ่อน/กาแฟ มากขึ้น · ยังสดอยู่ → จุดยืนสั้น ๆ
+  w *= rest ? 1 + m.fatigue * 2 : 1 + (1 - m.fatigue) * 0.5;
+  // เครียด/เจอ error → ขับ Racing Rig ระบาย โซฟา หรือไปคิดที่ไวต์บอร์ด (rig เหลือตัวเดียว จึงคูณแรงกว่าเดิมเล็กน้อย)
+  if (m.stress > 0) {
+    if (poi.act === 'racing') w *= 1 + m.stress * 6;
+    if (poi.act === 'sofa') w *= 1 + m.stress * 2;
+    if (poi.tag === 'board') w *= 1 + m.stress * 3;
+  }
+  switch (m.last) {
+    case 'testing':
+      if (poi.tag === 'water') w *= 3;
+      if (poi.act === 'coffee') w *= 1.5;
+      break;
+    case 'reading':
+    case 'searching':
+      if (poi.tag === 'books') w *= 3;
+      break;
+    case 'delegating':
+    case 'planning':
+      if (poi.tag === 'board') w *= 3;
+      break;
+    case 'web':
+      if (poi.tag === 'print') w *= 2;
+      break;
+    case 'writing':
+    case 'running':
+      if (poi.act === 'coffee' || poi.tag === 'coffee-machine') w *= 2;
+      break;
+    case 'done':
+      // งานเสร็จ → ให้รางวัลตัวเอง (เกม/พูล/กาแฟ)
+      if (poi.act === 'arcade' || poi.act === 'console' || poi.act === 'pool' || poi.act === 'racing') w *= 2.5;
+      if (poi.act === 'coffee') w *= 1.5;
+      break;
+  }
+  return w;
+}
+
+/** จองจุดว่าง คืน index หรือ -1 ถ้าเต็ม — ถ่วงน้ำหนักตามอารมณ์ (ไม่ส่ง mood = สุ่มแบบเดิม) */
+export function claimPoi(sessionId: string, mood?: PoiMood): number {
   const free = POIS.map((_, i) => i).filter((i) => !poiClaims.has(i));
   if (free.length === 0) return -1;
-  // ถ่วงน้ำหนัก: ว่างแล้วส่วนใหญ่จะไปห้องพักผ่อน
-  const weight = (i: number) => (POIS[i].lounge ? 3 : 1);
+  const pooling = poolPlayers();
+  const weight = (i: number) => {
+    const poi = POIS[i];
+    let w = poi.lounge ? 3 : 1;
+    if (!mood) return w;
+    w *= affinity(poi, mood);
+    if (i === mood.lastPoi && free.length > 1) w *= 0.1; // ไม่ไปที่เดิมซ้ำ
+    if (poi.act === 'pool') w *= pooling === 1 ? 3 : pooling >= 3 ? 0.3 : 1; // มีคนเล่นอยู่คนเดียว → ไปเป็นคู่
+    return w;
+  };
   let roll = Math.random() * free.reduce((n, i) => n + weight(i), 0);
   let idx = free[free.length - 1];
   for (const i of free) {
@@ -160,8 +269,34 @@ export function claimPoi(sessionId: string): number {
   return idx;
 }
 
+/** มีหุ่นกำลังเดินไป/ยืนเล่นที่โต๊ะพูลอยู่กี่คน */
+export function poolPlayers(): number {
+  let n = 0;
+  for (const idx of poiClaims.keys()) if (POIS[idx].act === 'pool') n++;
+  return n;
+}
+
 export function releasePoi(sessionId: string) {
   for (const [idx, owner] of poiClaims) if (owner === sessionId) poiClaims.delete(idx);
+}
+
+// ---------------- มี Agent "กำลังเล่น" อยู่ที่จุดไหน (ให้จอเกมเดินเฉพาะตอนมีคนเล่น) ----------------
+const poiPlayingAt = new Map<number, number>();
+/** Agent3D เรียกทุกเฟรมที่ Agent ถึงจุดและกำลังเล่นอยู่ */
+export function markPoiPlaying(idx: number) {
+  poiPlayingAt.set(idx, performance.now());
+}
+export function isPoiPlaying(idx: number): boolean {
+  const t = poiPlayingAt.get(idx);
+  return t !== undefined && performance.now() - t < 400;
+}
+/** index ใน POIS ของจุดที่มี act นั้น (เรียงตามลำดับ) */
+export function poiIndexes(act: PoiAct): number[] {
+  const out: number[] = [];
+  POIS.forEach((p, i) => {
+    if (p.act === act) out.push(i);
+  });
+  return out;
 }
 
 // ---------------- สิ่งกีดขวาง (ใช้คำนวณเส้นทาง) ----------------
@@ -180,11 +315,18 @@ const rects: Rect[] = [
   { x0: pool.x - pool.w / 2, z0: pool.z - pool.d / 2, x1: pool.x + pool.w / 2, z1: pool.z + pool.d / 2 }, // โต๊ะพูล
   { x0: -15.6, z0: -6.5, x1: -13.4, z1: -5.45 }, // ตู้เกม
   { x0: -11.9, z0: -6.5, x1: -9.7, z1: -5.9 }, // ชั้นวางทีวี
-  // โซฟา/เก้าอี้นวด: กันเฉพาะพนักพิง เพื่อให้เดินเข้าไปนั่งจากด้านหน้าเสมอ
+  // โซฟา: กันเฉพาะพนักพิง เพื่อให้เดินเข้าไปนั่งจากด้านหน้าเสมอ
   { x0: tvSofa.x - 1.3, z0: tvSofa.z + 0.25, x1: tvSofa.x + 1.3, z1: tvSofa.z + 0.6 },
   { x0: -16.5, z0: wallSofa.z - 1.3, x1: -16.1, z1: wallSofa.z + 1.3 },
   { x0: -14.8, z0: 3.4, x1: -14.0, z1: 4.4 }, // โต๊ะเตี้ยหน้าโซฟา
-  { x0: -16.5, z0: -3.0, x1: -16.0, z1: 0.0 }, // เก้าอี้นวด
+  // Racing Rig: โครงด้านหลังเบาะ + แถวจอ 3 จอ (เว้นทางเดินแคบ ๆ ข้างเบาะให้ Agent เดินเข้าจากทาง +z)
+  { x0: -16.5, z0: racing[0].z - 0.8, x1: -16.0, z1: racing[0].z + 0.8 },
+  { x0: racing[0].x + 1.05, z0: racing[0].z - 1.3, x1: racing[0].x + 1.7, z1: racing[0].z + 1.3 },
+  // ผนังขวาของห้องทำงาน (เว้นช่องประตู) — ตอนนี้มีพื้นที่นอกห้องให้เดินแล้ว
+  { x0: ROOM.maxX - 0.1, z0: ROOM.minZ, x1: ROOM.maxX + 0.1, z1: DOOR.z - 0.8 },
+  { x0: ROOM.maxX - 0.1, z0: DOOR.z + 0.8, x1: ROOM.maxX + 0.1, z1: ROOM.maxZ },
+  // ร้านกาแฟ
+  CAFE.shop,
 ];
 const circles: Circle[] = [
   ...MEETING_SPOTS.map((s) => ({ x: s[0], z: s[2], r: MEETING_TABLE_R })),
@@ -199,6 +341,13 @@ const circles: Circle[] = [
 ];
 export const PLANTS: Circle[] = circles.slice(MEETING_SPOTS.length + 1);
 
+// ร้านกาแฟ: โต๊ะ + เก้าอี้ของลูกค้าประจำ (แยกจาก circles เพราะ PLANTS ตัดจาก circles)
+const cafeCircles: Circle[] = [
+  ...[...CAFE.tables, ...CAFE.npcTables].map((t) => ({ x: t.x, z: t.z, r: CAFE_TABLE_R })),
+  ...CAFE.npcTables.flatMap((t) => [-1, 1].map((s) => ({ x: t.x + s * CAFE_CHAIR_DX, z: t.z, r: 0.25 }))),
+  { x: CAFE.npcQueue.x, z: CAFE.npcQueue.z, r: 0.3 },
+];
+
 const INFLATE = 0.4; // รัศมี Agent โดยประมาณ
 
 function hitsObstacle(x: number, z: number): boolean {
@@ -208,6 +357,9 @@ function hitsObstacle(x: number, z: number): boolean {
   for (const c of circles) {
     if (Math.hypot(x - c.x, z - c.z) < c.r + INFLATE) return true;
   }
+  for (const c of cafeCircles) {
+    if (Math.hypot(x - c.x, z - c.z) < c.r + INFLATE) return true;
+  }
   return false;
 }
 
@@ -215,7 +367,7 @@ function hitsObstacle(x: number, z: number): boolean {
 const CELL = 0.25;
 const GX0 = -16.1;
 const GZ0 = -6.0;
-const NX = Math.round((8.1 - GX0) / CELL) + 1;
+const NX = Math.round((17.9 - GX0) / CELL) + 1;
 const NZ = Math.round((5.1 - GZ0) / CELL) + 1;
 const blocked = new Uint8Array(NX * NZ);
 for (let iz = 0; iz < NZ; iz++) {
@@ -227,6 +379,21 @@ for (let iz = 0; iz < NZ; iz++) {
 const cellX = (ix: number) => GX0 + ix * CELL;
 const cellZ = (iz: number) => GZ0 + iz * CELL;
 const toCell = (v: number, o: number, n: number) => Math.min(n - 1, Math.max(0, Math.round((v - o) / CELL)));
+
+/** สุ่มจุดว่างบนพื้น (ใช้กับสัตว์เลี้ยงที่เดินเล่น) — ในอาคาร + ระเบียงร้านกาแฟ + ทางเดินหน้าประตู */
+export function randomFreeSpot(rnd: () => number = Math.random): Vec3 {
+  for (let k = 0; k < 80; k++) {
+    const ix = Math.floor(rnd() * NX);
+    const iz = Math.floor(rnd() * NZ);
+    if (blocked[iz * NX + ix]) continue;
+    const x = cellX(ix);
+    const z = cellZ(iz);
+    // ช่องว่างระหว่างอาคารกับร้านกาแฟ: ให้อยู่เฉพาะแนวทางเดินหน้าประตู
+    if (x > 8.6 && x < CAFE.deck.x0 - 0.2 && Math.abs(z - DOOR.z) > 1.2) continue;
+    return [x, 0, z];
+  }
+  return [0, 0, 1];
+}
 
 /** เส้นตรงระหว่าง a→b ไม่ชนอะไร (ช่วงใกล้ปลายทั้งสองข้างยกเว้น เพราะเริ่ม/จบในที่นั่งซึ่งอยู่ใกล้โต๊ะ) */
 function lineClear(ax: number, az: number, bx: number, bz: number, exA = true, exB = true): boolean {

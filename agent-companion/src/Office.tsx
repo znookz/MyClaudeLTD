@@ -12,7 +12,17 @@ import {
   MEETING_TABLE_R,
   PLANTS,
   ROOM,
+  isPoiPlaying,
+  poiIndexes,
+  poolPlayers,
 } from './utils/office';
+import { createGameScreen, type GameKind } from './utils/miniGames';
+import { RacingGame, racingTelemetry } from './utils/racingGame';
+import Outdoors from './Outdoors';
+import Cafe from './Cafe';
+import { SKY, useTod } from "./utils/sceneSettings";
+import Pets from './Pets';
+import { BALL_COLORS, BALL_R, createPool, stepPool, type PoolState } from './utils/pool';
 
 const W = ROOM.maxX - ROOM.minX; // 17
 const D = ROOM.maxZ - ROOM.minZ; // 12
@@ -23,13 +33,13 @@ const ALL_W = ROOM.maxX - LOUNGE.minX;
 const ALL_CX = (ROOM.maxX + LOUNGE.minX) / 2;
 
 const COLORS = {
-  wall: '#26324b',
-  baseboard: '#18202f',
-  wood: '#c6a57a',
-  woodDark: '#8a6a47',
-  panel: '#2b3956',
-  chair: '#34476b',
-  sofa: '#46629a',
+  wall: '#f4dfe0',
+  baseboard: '#cdb8c8',
+  wood: '#e6c9a4',
+  woodDark: '#c49f7a',
+  panel: '#b7c4e6',
+  chair: '#9db4e0',
+  sofa: '#a9bff0',
 };
 
 // ============================================================
@@ -40,12 +50,12 @@ function Floor() {
     const c = document.createElement('canvas');
     c.width = c.height = 128;
     const g = c.getContext('2d')!;
-    g.fillStyle = '#243049';
+    g.fillStyle = '#dccde0';
     g.fillRect(0, 0, 128, 128);
-    g.fillStyle = '#27344f';
+    g.fillStyle = '#e6d9e8';
     g.fillRect(0, 0, 64, 64);
     g.fillRect(64, 64, 64, 64);
-    g.strokeStyle = '#33425f';
+    g.strokeStyle = '#cdbdd2';
     g.lineWidth = 2;
     g.strokeRect(0, 0, 128, 128);
     const t = new THREE.CanvasTexture(c);
@@ -110,11 +120,12 @@ function Wall({
 }
 
 function Window({ x }: { x: number }) {
+  const night = SKY[useTod()].lamp;
   return (
     <group position={[x, 2.0, 0.01]}>
       <mesh>
         <boxGeometry args={[2.3, 1.45, 0.05]} />
-        <meshStandardMaterial color="#0e2a4d" emissive="#1e4f87" emissiveIntensity={0.9} toneMapped={false} />
+        <meshStandardMaterial color={night > 0.5 ? "#2a3358" : "#cfe8f7"} emissive={night > 0.5 ? "#f5c26b" : "#bfe0f5"} emissiveIntensity={night > 0.5 ? 0.9 : 0.7} toneMapped={false} />
       </mesh>
       <mesh position={[0, 0, 0.03]}>
         <boxGeometry args={[0.05, 1.45, 0.03]} />
@@ -254,7 +265,7 @@ function MeetingTable({ x, z, active }: { x: number; z: number; active: boolean 
     <group position={[x, 0, z]}>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.008, 0]} receiveShadow>
         <circleGeometry args={[2.1, 48]} />
-        <meshStandardMaterial ref={rug} color="#15333f" emissive="#22d3ee" emissiveIntensity={0.08} roughness={1} />
+        <meshStandardMaterial ref={rug} color="#cfe9ee" emissive="#22d3ee" emissiveIntensity={0.08} roughness={1} />
       </mesh>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
         <ringGeometry args={[2.0, 2.1, 96]} />
@@ -399,11 +410,11 @@ function LoungeFloor() {
     const c = document.createElement('canvas');
     c.width = c.height = 128;
     const g = c.getContext('2d')!;
-    g.fillStyle = '#3a2a4f';
+    g.fillStyle = '#d9cdf0';
     g.fillRect(0, 0, 128, 128);
-    g.fillStyle = '#42305a';
+    g.fillStyle = '#e2d8f5';
     for (let i = 0; i < 4; i++) g.fillRect(i * 32, 0, 16, 128); // ลายพรมเป็นริ้ว
-    g.strokeStyle = '#4d3968';
+    g.strokeStyle = '#cbbde6';
     g.lineWidth = 2;
     g.strokeRect(0, 0, 128, 128);
     const t = new THREE.CanvasTexture(c);
@@ -519,27 +530,42 @@ function LowTable({ x, z }: { x: number; z: number }) {
   );
 }
 
-const BALLS: [number, number, string][] = [
-  [-0.75, 0.05, '#f8fafc'],
-  [0.35, 0, '#facc15'],
-  [0.47, 0.07, '#dc2626'],
-  [0.47, -0.07, '#2563eb'],
-  [0.59, 0.14, '#111827'],
-  [0.59, 0, '#16a34a'],
-  [0.59, -0.14, '#f97316'],
-  [-0.2, -0.3, '#7c3aed'],
-  [0.9, 0.35, '#be123c'],
-];
-
 function PoolTable({ x, z }: { x: number; z: number }) {
   const W2 = 2.6;
   const D2 = 1.4;
+  const pool = useRef<PoolState>(createPool());
+  const meshes = useRef<(THREE.Mesh | null)[]>([]);
+  const spin = useMemo(() => new THREE.Quaternion(), []);
+  const axis = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame((state, rawDelta) => {
+    const dt = Math.min(rawDelta, 0.05);
+    const s = pool.current;
+    stepPool(s, dt, state.clock.elapsedTime, poolPlayers() > 0);
+    s.balls.forEach((b, i) => {
+      const m = meshes.current[i];
+      if (!m) return;
+      // ตกหลุม: จมลงและเล็กลงจนหาย; ลูกใหม่หลังตั้งโต๊ะปรากฏกลับมา
+      m.visible = !b.sunk || b.sink < 1;
+      const k = b.sunk ? 1 - b.sink : 1;
+      m.scale.setScalar(Math.max(k, 0.001));
+      m.position.set(b.x, 0.88 - (b.sunk ? 0.05 * b.sink : 0), b.z);
+      // กลิ้งจริง: หมุนรอบแกนที่ตั้งฉากกับทิศเคลื่อนที่ ตามระยะทางที่เคลื่อน
+      const sp = Math.hypot(b.vx, b.vz);
+      if (sp > 1e-4) {
+        axis.set(b.vz, 0, -b.vx).normalize();
+        spin.setFromAxisAngle(axis, (sp * dt) / BALL_R);
+        m.quaternion.premultiply(spin);
+      }
+    });
+  });
+
   return (
     <group position={[x, 0, z]}>
       {/* พรมใต้โต๊ะ */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.008, 0]} receiveShadow>
         <planeGeometry args={[4.6, 3.6]} />
-        <meshStandardMaterial color="#5b2a6e" roughness={1} />
+        <meshStandardMaterial color="#e3c4e6" roughness={1} />
       </mesh>
       {/* ตัวโต๊ะ + ผ้าสักหลาด + ขอบ */}
       <mesh position={[0, 0.72, 0]} castShadow receiveShadow>
@@ -580,10 +606,24 @@ function PoolTable({ x, z }: { x: number; z: number }) {
           </mesh>
         )),
       )}
-      {BALLS.map(([bx, bz, c], i) => (
-        <mesh key={i} position={[bx, 0.88, bz]} castShadow>
-          <sphereGeometry args={[0.045, 14, 14]} />
+      {BALL_COLORS.map((c, i) => (
+        <mesh
+          key={i}
+          ref={(m) => {
+            meshes.current[i] = m;
+          }}
+          position={[0, 0.88, 0]}
+          castShadow
+        >
+          <sphereGeometry args={[BALL_R, 16, 16]} />
           <meshStandardMaterial color={c} roughness={0.2} metalness={0.1} />
+          {/* แถบสีขาวบนลูก ให้เห็นว่ากำลังหมุนตอนกลิ้ง (ยกเว้นลูกขาว) */}
+          {i > 0 && (
+            <mesh>
+              <torusGeometry args={[BALL_R * 0.98, BALL_R * 0.28, 6, 20]} />
+              <meshStandardMaterial color="#f8fafc" roughness={0.3} />
+            </mesh>
+          )}
         </mesh>
       ))}
       {/* โคมไฟเหนือโต๊ะ */}
@@ -606,17 +646,17 @@ function PoolTable({ x, z }: { x: number; z: number }) {
   );
 }
 
-function ArcadeCabinet({ x, z, color, seed }: { x: number; z: number; color: string; seed: number }) {
-  const screen = useRef<THREE.MeshStandardMaterial>(null);
-  const tint = useMemo(() => new THREE.Color(), []);
-  useFrame((state) => {
-    if (!screen.current) return;
-    const t = state.clock.elapsedTime + seed * 3.7;
-    // หน้าจอเปลี่ยนสีวนไปเรื่อย ๆ เหมือนเกมกำลังเล่น demo
-    tint.setHSL((t * 0.13) % 1, 0.85, 0.55);
-    screen.current.emissive.copy(tint);
-    screen.current.emissiveIntensity = 1.3 + Math.sin(t * 9) * 0.25;
-  });
+/** จอเกมจริง: CanvasTexture วาดมินิเกมเฉพาะตอนมี Agent เล่นอยู่ (poiIdx = index ใน POIS) */
+function useGameScreen(kind: GameKind, w: number, h: number, poiIdx: number[]) {
+  const gs = useMemo(() => createGameScreen(kind, w, h), [kind, w, h]);
+  useEffect(() => () => gs.dispose(), [gs]);
+  useFrame((_, dt) => gs.tick(dt, poiIdx.some(isPoiPlaying)));
+  return gs.texture;
+}
+
+function ArcadeCabinet({ x, z, color, kind, poiIdx }: { x: number; z: number; color: string; kind: GameKind; poiIdx: number }) {
+  const idxs = useMemo(() => [poiIdx], [poiIdx]);
+  const map = useGameScreen(kind, 160, 115, idxs);
   return (
     <group position={[x, 0, z]}>
       <mesh position={[0, 0.95, -0.05]} castShadow receiveShadow>
@@ -635,10 +675,16 @@ function ArcadeCabinet({ x, z, color, seed }: { x: number; z: number; color: str
         <meshStandardMaterial color={color} emissive={color} emissiveIntensity={2} toneMapped={false} />
       </mesh>
       {/* จอ */}
-      <mesh position={[0, 1.34, 0.3]} rotation={[-0.2, 0, 0]}>
-        <boxGeometry args={[0.7, 0.52, 0.03]} />
-        <meshStandardMaterial ref={screen} color="#0b1220" emissive="#22d3ee" emissiveIntensity={1.3} toneMapped={false} />
-      </mesh>
+      <group position={[0, 1.34, 0.3]} rotation={[-0.2, 0, 0]}>
+        <mesh>
+          <boxGeometry args={[0.7, 0.52, 0.03]} />
+          <meshStandardMaterial color="#0b1220" roughness={0.5} />
+        </mesh>
+        <mesh position={[0, 0, 0.017]}>
+          <planeGeometry args={[0.64, 0.46]} />
+          <meshBasicMaterial map={map} toneMapped={false} />
+        </mesh>
+      </group>
       {/* แผงควบคุม: จอยสติ๊ก + ปุ่ม */}
       <mesh position={[0, 0.98, 0.42]} rotation={[0.22, 0, 0]} castShadow>
         <boxGeometry args={[0.84, 0.07, 0.36]} />
@@ -662,13 +708,8 @@ function ArcadeCabinet({ x, z, color, seed }: { x: number; z: number; color: str
   );
 }
 
-function TvConsole({ x, z }: { x: number; z: number }) {
-  const screen = useRef<THREE.MeshStandardMaterial>(null);
-  useFrame((state) => {
-    if (!screen.current) return;
-    const t = state.clock.elapsedTime;
-    screen.current.emissiveIntensity = 1.1 + Math.sin(t * 5) * 0.15 + Math.sin(t * 13) * 0.1;
-  });
+function TvConsole({ x, z, poiIdx }: { x: number; z: number; poiIdx: number[] }) {
+  const map = useGameScreen('invaders', 224, 120, poiIdx);
   return (
     <group position={[x, 0, z]}>
       {/* ชั้นวาง + เครื่องเกม */}
@@ -691,67 +732,229 @@ function TvConsole({ x, z }: { x: number; z: number }) {
       </mesh>
       <mesh position={[0, 1.55, -0.14]}>
         <planeGeometry args={[2.16, 1.16]} />
-        <meshStandardMaterial ref={screen} color="#0b1220" emissive="#6366f1" emissiveIntensity={1.1} toneMapped={false} />
+        <meshBasicMaterial map={map} toneMapped={false} />
       </mesh>
-      {/* ภาพในเกม: พื้น + ตัวละคร 2 ตัว */}
-      <mesh position={[0, 1.12, -0.135]}>
-        <planeGeometry args={[2.16, 0.3]} />
-        <meshBasicMaterial color="#16a34a" toneMapped={false} />
-      </mesh>
-      {[
-        [-0.5, '#f97316'],
-        [0.45, '#f43f5e'],
-      ].map(([px, c]) => (
-        <mesh key={c as string} position={[px as number, 1.4, -0.13]}>
-          <planeGeometry args={[0.2, 0.28]} />
-          <meshBasicMaterial color={c as string} toneMapped={false} />
-        </mesh>
-      ))}
     </group>
   );
 }
 
-function MassageChair({ x, z, rotationY }: { x: number; z: number; rotationY: number }) {
-  const glow = useRef<THREE.MeshStandardMaterial>(null);
-  useFrame((state) => {
-    if (glow.current) glow.current.emissiveIntensity = 1.4 + Math.sin(state.clock.elapsedTime * 2.5 + z) * 0.8;
+/**
+ * Racing Sim Rig: โครงอลูมิเนียม + bucket seat + พวงมาลัย + แป้นเหยียบ 3 อัน + คันเกียร์ + จอ 3 จอโค้ง
+ * แกนท้องถิ่น: +z = ทิศที่คนขับมอง · +x = ด้านซ้ายของคนขับ (คันเกียร์/คลัตช์อยู่ฝั่งนี้)
+ * ค่าพวงมาลัย/เกียร์/แป้นเหยียบมาจาก racingTelemetry (เกมจริง) · คลิกที่ rig = takeover
+ */
+const SCREEN_ANGLE = 0.5;
+function RacingRig({ x, z, rotationY, poiIdx }: { x: number; z: number; rotationY: number; poiIdx: number }) {
+  const game = useMemo(() => new RacingGame(), []);
+  const tex = useMemo(
+    () =>
+      [0, 1, 2].map((i) => {
+        const t = new THREE.CanvasTexture(game.canvas);
+        t.colorSpace = THREE.SRGBColorSpace;
+        t.repeat.set(1 / 3, 1);
+        t.offset.set(i / 3, 0);
+        return t;
+      }),
+    [game],
+  );
+  useEffect(
+    () => () => {
+      game.dispose();
+      tex.forEach((t) => t.dispose());
+      document.body.style.cursor = '';
+    },
+    [game, tex],
+  );
+  const root = useRef<THREE.Group>(null);
+  const wheel = useRef<THREE.Group>(null);
+  const clutch = useRef<THREE.Group>(null);
+  const brake = useRef<THREE.Group>(null);
+  const gas = useRef<THREE.Group>(null);
+  const stick = useRef<THREE.Group>(null);
+  const wp = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame((state, dt) => {
+    if (!root.current) return;
+    root.current.getWorldPosition(wp);
+    const near = state.camera.position.distanceTo(wp) < 45;
+    // อัปเดต texture ~30fps เฉพาะตอนมีคนขับ (Agent นั่งอยู่/ผู้ใช้ takeover) และอยู่ในระยะ
+    if (game.tick(dt, isPoiPlaying(poiIdx) && near)) tex.forEach((t) => (t.needsUpdate = true));
+    const T = racingTelemetry;
+    const k = Math.min(1, dt * 12);
+    if (wheel.current) wheel.current.rotation.z += (T.steer * 1.6 - wheel.current.rotation.z) * k;
+    if (gas.current) gas.current.rotation.x += (-T.throttle * 0.35 - gas.current.rotation.x) * k;
+    if (brake.current) brake.current.rotation.x += (-T.brake * 0.35 - brake.current.rotation.x) * k;
+    if (clutch.current) clutch.current.rotation.x += (-Math.sin(Math.min(1, T.shiftPulse) * Math.PI) * 0.4 - clutch.current.rotation.x) * k;
+    if (stick.current) {
+      // H-pattern: เกียร์ 1-2 ซ้าย · 3-4 กลาง · 5-6 ขวา · เลขคี่ดันไปหน้า เลขคู่ดึงมาหลัง
+      const col = Math.floor((T.gear - 1) / 2) - 1;
+      const fwd = T.gear % 2 === 1 ? 1 : -1;
+      stick.current.rotation.z += (-col * 0.2 - stick.current.rotation.z) * k;
+      stick.current.rotation.x += (fwd * 0.28 - stick.current.rotation.x) * k;
+    }
   });
-  const leather = { color: '#3b2f2a', roughness: 0.55 } as const;
+
+  const alu = { color: '#b6bfcc', metalness: 0.85, roughness: 0.35 } as const;
+  const seatCol = { color: '#1f2937', roughness: 0.7 } as const;
+  const panels: { px: number; pz: number; ry: number }[] = [
+    { px: 0.84, pz: 1.23, ry: Math.PI + SCREEN_ANGLE }, // จอซ้าย (ฝั่ง +x ท้องถิ่น)
+    { px: 0, pz: 1.45, ry: Math.PI },
+    { px: -0.84, pz: 1.23, ry: Math.PI - SCREEN_ANGLE },
+  ];
   return (
-    <group position={[x, 0, z]} rotation={[0, rotationY, 0]}>
-      <mesh position={[0, 0.2, 0.02]} castShadow receiveShadow>
-        <boxGeometry args={[0.98, 0.4, 0.86]} />
-        <meshStandardMaterial {...leather} />
-      </mesh>
-      {/* พนักพิงเอนหลัง + หมอนรองหัว */}
-      <group position={[0, 0.4, -0.42]} rotation={[-0.16, 0, 0]}>
-        <mesh position={[0, 0.62, 0]} castShadow>
-          <boxGeometry args={[0.9, 1.3, 0.24]} />
-          <meshStandardMaterial {...leather} />
-        </mesh>
-        <mesh position={[0, 1.14, 0.1]}>
-          <boxGeometry args={[0.5, 0.26, 0.12]} />
-          <meshStandardMaterial color="#d6c2a8" roughness={0.8} />
-        </mesh>
-      </group>
-      {/* ที่พักแขนแบบหุ้มข้าง */}
+    <group
+      ref={root}
+      position={[x, 0, z]}
+      rotation={[0, rotationY, 0]}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        game.setHover(true);
+        document.body.style.cursor = 'pointer';
+      }}
+      onPointerOut={() => {
+        game.setHover(false);
+        document.body.style.cursor = '';
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        game.enterManual();
+      }}
+    >
+      {/* โครงอลูมิเนียม: ราง 2 เส้น + คานขวาง */}
       {[-1, 1].map((s) => (
-        <mesh key={s} position={[s * 0.6, 0.38, 0.05]} castShadow>
-          <boxGeometry args={[0.2, 0.62, 0.95]} />
-          <meshStandardMaterial {...leather} />
+        <mesh key={s} position={[s * 0.3, 0.1, 0.5]} castShadow>
+          <boxGeometry args={[0.05, 0.05, 1.75]} />
+          <meshStandardMaterial {...alu} />
         </mesh>
       ))}
-      {/* แถบไฟข้างเก้าอี้ */}
+      {[-0.3, 0.35, 1.3].map((pz) => (
+        <mesh key={pz} position={[0, 0.1, pz]}>
+          <boxGeometry args={[0.65, 0.05, 0.05]} />
+          <meshStandardMaterial {...alu} />
+        </mesh>
+      ))}
+      {/* bucket seat */}
+      <mesh position={[0, 0.27, 0]}>
+        <boxGeometry args={[0.42, 0.05, 0.46]} />
+        <meshStandardMaterial {...alu} />
+      </mesh>
+      <mesh position={[0, 0.34, 0]} castShadow>
+        <boxGeometry args={[0.46, 0.09, 0.46]} />
+        <meshStandardMaterial {...seatCol} />
+      </mesh>
       {[-1, 1].map((s) => (
-        <mesh key={`l${s}`} position={[s * 0.705, 0.4, 0.05]}>
-          <boxGeometry args={[0.012, 0.06, 0.8]} />
-          <meshStandardMaterial
-            ref={s > 0 ? glow : undefined}
-            color="#2dd4bf"
-            emissive="#2dd4bf"
-            emissiveIntensity={1.6}
-            toneMapped={false}
-          />
+        <mesh key={s} position={[s * 0.26, 0.4, 0.02]} castShadow>
+          <boxGeometry args={[0.07, 0.12, 0.42]} />
+          <meshStandardMaterial color="#dc2626" roughness={0.6} />
+        </mesh>
+      ))}
+      <group position={[0, 0.38, -0.25]} rotation={[-0.12, 0, 0]}>
+        <mesh position={[0, 0.34, 0]} castShadow>
+          <boxGeometry args={[0.46, 0.68, 0.1]} />
+          <meshStandardMaterial {...seatCol} />
+        </mesh>
+        {[-1, 1].map((s) => (
+          <mesh key={s} position={[s * 0.26, 0.32, 0.04]}>
+            <boxGeometry args={[0.07, 0.56, 0.16]} />
+            <meshStandardMaterial color="#dc2626" roughness={0.6} />
+          </mesh>
+        ))}
+        <mesh position={[0, 0.74, 0.01]}>
+          <boxGeometry args={[0.26, 0.18, 0.08]} />
+          <meshStandardMaterial {...seatCol} />
+        </mesh>
+      </group>
+      {/* พวงมาลัย: เสา + ตัวมอเตอร์ + วงล้อกลม (หมุนตามเกม) */}
+      <mesh position={[0, 0.4, 0.78]}>
+        <cylinderGeometry args={[0.03, 0.03, 0.6, 8]} />
+        <meshStandardMaterial {...alu} />
+      </mesh>
+      <mesh position={[0, 0.72, 0.7]}>
+        <boxGeometry args={[0.26, 0.16, 0.2]} />
+        <meshStandardMaterial color="#111827" roughness={0.5} />
+      </mesh>
+      <group position={[0, 0.82, 0.55]} rotation={[0.5, 0, 0]}>
+        <group ref={wheel}>
+          <mesh>
+            <torusGeometry args={[0.17, 0.02, 10, 28]} />
+            <meshStandardMaterial color="#0b0f17" roughness={0.6} />
+          </mesh>
+          <mesh rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.045, 0.045, 0.03, 12]} />
+            <meshStandardMaterial color="#ef4444" roughness={0.4} />
+          </mesh>
+          {[0, Math.PI / 2, Math.PI].map((a) => (
+            <mesh key={a} rotation={[0, 0, a]}>
+              <boxGeometry args={[0.33, 0.025, 0.012]} />
+              <meshStandardMaterial {...alu} />
+            </mesh>
+          ))}
+          <mesh position={[0, 0.17, 0]}>
+            <boxGeometry args={[0.03, 0.025, 0.025]} />
+            <meshStandardMaterial color="#facc15" emissive="#facc15" emissiveIntensity={1.5} toneMapped={false} />
+          </mesh>
+        </group>
+      </group>
+      {/* แป้นเหยียบ: คลัตช์ (ซ้าย) · เบรก · คันเร่ง (ขวา) */}
+      <mesh position={[0, 0.2, 1.02]} rotation={[-0.6, 0, 0]}>
+        <boxGeometry args={[0.5, 0.03, 0.34]} />
+        <meshStandardMaterial {...alu} />
+      </mesh>
+      {(
+        [
+          [0.13, clutch, '#9ca3af'],
+          [0, brake, '#ef4444'],
+          [-0.13, gas, '#9ca3af'],
+        ] as const
+      ).map(([px, ref, col]) => (
+        <group key={px} ref={ref} position={[px, 0.2, 0.95]}>
+          <mesh position={[0, 0.07, 0.03]} rotation={[-0.6, 0, 0]}>
+            <boxGeometry args={[0.08, 0.15, 0.015]} />
+            <meshStandardMaterial color={col} metalness={0.6} roughness={0.4} />
+          </mesh>
+        </group>
+      ))}
+      {/* คันเกียร์ข้างเบาะ (ฝั่งซ้ายคนขับ) */}
+      <mesh position={[0.42, 0.2, 0.15]}>
+        <boxGeometry args={[0.12, 0.2, 0.22]} />
+        <meshStandardMaterial {...alu} />
+      </mesh>
+      <group ref={stick} position={[0.42, 0.32, 0.15]}>
+        <mesh position={[0, 0.1, 0]}>
+          <cylinderGeometry args={[0.012, 0.012, 0.2, 8]} />
+          <meshStandardMaterial {...alu} />
+        </mesh>
+        <mesh position={[0, 0.22, 0]}>
+          <sphereGeometry args={[0.032, 12, 12]} />
+          <meshStandardMaterial color="#111827" roughness={0.4} />
+        </mesh>
+      </group>
+      {/* จอ 3 จอต่อกันเป็นโค้งหันเข้าหาคนขับ (ภาพเดียวต่อเนื่อง แบ่งเป็น 3 ส่วน) */}
+      {panels.map((p, i) => (
+        <group key={i} position={[p.px, 1.05, p.pz]} rotation={[0, p.ry, 0]}>
+          <mesh position={[0, 0, -0.03]}>
+            <boxGeometry args={[0.94, 0.65, 0.04]} />
+            <meshStandardMaterial color="#0b0f17" roughness={0.4} metalness={0.3} />
+          </mesh>
+          <mesh>
+            <planeGeometry args={[0.9, 0.61]} />
+            <meshBasicMaterial map={tex[i]} toneMapped={false} />
+          </mesh>
+          <mesh position={[0, -0.5, -0.1]}>
+            <boxGeometry args={[0.05, 0.5, 0.05]} />
+            <meshStandardMaterial {...alu} />
+          </mesh>
+        </group>
+      ))}
+      <mesh position={[0, 0.08, 1.5]}>
+        <boxGeometry args={[2.2, 0.05, 0.05]} />
+        <meshStandardMaterial {...alu} />
+      </mesh>
+      {/* แถบไฟใต้โครง */}
+      {[-1, 1].map((s) => (
+        <mesh key={`l${s}`} position={[s * 0.33, 0.05, 0.5]}>
+          <boxGeometry args={[0.012, 0.02, 1.6]} />
+          <meshStandardMaterial color="#ef4444" emissive="#ef4444" emissiveIntensity={1.8} toneMapped={false} />
         </mesh>
       ))}
     </group>
@@ -759,21 +962,31 @@ function MassageChair({ x, z, rotationY }: { x: number; z: number; rotationY: nu
 }
 
 function Lounge() {
-  const { pool, arcades, tv, tvSofa, wallSofa, lowTable, massage } = LOUNGE_ITEMS;
+  const { pool, arcades, tv, tvSofa, wallSofa, lowTable, racing } = LOUNGE_ITEMS;
+  const arcadeIdx = useMemo(() => poiIndexes('arcade'), []);
+  const consoleIdx = useMemo(() => poiIndexes('console'), []);
+  const racingIdx = useMemo(() => poiIndexes('racing'), []);
   return (
     <group>
       <LoungeFloor />
       <Divider />
       <PoolTable x={pool.x} z={pool.z} />
       {arcades.map((a, i) => (
-        <ArcadeCabinet key={i} x={a.x} z={a.z} color={i % 2 ? '#22d3ee' : '#f472b6'} seed={i} />
+        <ArcadeCabinet
+          key={i}
+          x={a.x}
+          z={a.z}
+          color={i % 2 ? '#22d3ee' : '#f472b6'}
+          kind={i % 2 ? 'snake' : 'pong'}
+          poiIdx={arcadeIdx[i]}
+        />
       ))}
-      <TvConsole x={tv.x} z={tv.z} />
+      <TvConsole x={tv.x} z={tv.z} poiIdx={consoleIdx} />
       <Sofa x={tvSofa.x} z={tvSofa.z} rotationY={Math.PI} color="#7c3f6b" />
       <Sofa x={wallSofa.x} z={wallSofa.z} rotationY={Math.PI / 2} />
       <LowTable x={lowTable.x} z={lowTable.z} />
-      {massage.map((m, i) => (
-        <MassageChair key={i} x={m.x} z={m.z} rotationY={Math.PI / 2} />
+      {racing.map((m, i) => (
+        <RacingRig key={i} x={m.x} z={m.z} rotationY={Math.PI / 2} poiIdx={racingIdx[i]} />
       ))}
       <pointLight position={[-14.5, 2.4, -4.6]} color="#f472b6" intensity={5} distance={6} />
       <pointLight position={[-10.8, 2.0, -4.6]} color="#818cf8" intensity={4} distance={5} />
@@ -814,6 +1027,9 @@ function Office({ deskStatus, activeSpots }: OfficeProps) {
   return (
     <group>
       <Floor />
+      <Outdoors />
+      <Cafe />
+      <Pets />
 
       {/* ผนังหลัง (ยาวตลอดทั้งสองห้อง): หน้าต่างฝั่งห้องทำงาน + ป้ายนีออนฝั่งห้องพักผ่อน */}
       <Wall position={[ALL_CX, 0, ROOM.minZ]} rotationY={0} length={ALL_W} outward={[0, -1]}>

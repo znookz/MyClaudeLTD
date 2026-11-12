@@ -44,6 +44,18 @@ const ACTIVITY_STATUS = {
   failed: 'error',
 };
 
+// ผลเทสต์ที่ "ล้ม" — ไม่นับ "0 failed"
+const TEST_FAIL = /\b[1-9]\d* (?:failed|failing)\b|\bFAIL(?:ED)?\b|AssertionError|Tests?:.*\bfailed\b/;
+const STALE_MS = Number(process.env.AGENT_STALE_MIN ?? 60) * 60_000;
+
+/** @type {Map<string, {lastSeen: number, testPending: boolean}>} ข้อมูลภายในของ bridge (ไม่ส่งให้หน้าเว็บ) */
+const meta = new Map();
+const metaOf = (id) => {
+  let m = meta.get(id);
+  if (!m) meta.set(id, (m = { lastSeen: Date.now(), testPending: false }));
+  return m;
+};
+
 const short = (s, n = 60) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 // ---------------- sub-agent ----------------
@@ -78,6 +90,8 @@ function translateHook(h) {
   const sessionId = h.session_id;
   if (!sessionId) return null;
 
+  const m = metaOf(sessionId);
+  m.lastSeen = Date.now();
   const project = h.cwd ? path.basename(h.cwd) : 'unknown-project';
   const prev = agents.get(sessionId);
   const base = {
@@ -106,6 +120,7 @@ function translateHook(h) {
       if (EDIT_TOOLS.has(tool)) return ev('writing', { ...t, file: input.file_path ?? input.notebook_path ?? '' });
       if (tool === 'Bash') {
         const cmd = String(input.command ?? '');
+        m.testPending = TEST_CMD.test(cmd);
         return ev(TEST_CMD.test(cmd) ? 'testing' : 'running', { ...t, file: short(`$ ${cmd}`, 70) });
       }
       if (READ_TOOLS.has(tool)) return ev('reading', { ...t, file: input.file_path ?? input.path ?? '' });
@@ -130,7 +145,13 @@ function translateHook(h) {
 
     case 'PostToolUse': {
       const r = h.tool_response;
-      const failed = r && typeof r === 'object' && (r.is_error === true || r.success === false || r.interrupted === true);
+      let failed = r && typeof r === 'object' && (r.is_error === true || r.success === false || r.interrupted === true);
+      // คำสั่งเทสต์ที่ exit 0 แต่ผลบอกว่ามีเคสล้ม → ถือว่า failed (hook ไม่มี exit code ให้ตรง ๆ)
+      if (tool === 'Bash' && m.testPending) {
+        m.testPending = false;
+        const out = typeof r === 'string' ? r : `${r?.stdout ?? ''}\n${r?.stderr ?? ''}`;
+        if (!failed && TEST_FAIL.test(out.slice(-4000))) failed = true;
+      }
       // sub-agent ทำงานเสร็จ (ตัวที่รันเบื้องหลัง tool จะคืนค่าทันที → ยังไม่ถือว่าเสร็จ รอ SubagentStop)
       const subAgents = DELEGATE_TOOLS.has(tool)
         ? finishSub(sessionId, (s) => !s.background && (!h.tool_use_id || s.id === h.tool_use_id))
@@ -174,8 +195,16 @@ function translateHook(h) {
 
 function applyAndBroadcast(ev) {
   if (!ev) return;
-  if (ev.type === 'agent_remove') agents.delete(ev.sessionId);
-  else if (ev.type === 'agent_update') agents.set(ev.sessionId, { ...agents.get(ev.sessionId), ...ev });
+  if (ev.type === 'agent_remove') {
+    agents.delete(ev.sessionId);
+    meta.delete(ev.sessionId);
+  } else if (ev.type === 'agent_update') {
+    // ข้าม event ที่ไม่เปลี่ยนอะไรเลย (Pre/PostToolUse ถี่ ๆ ที่ผลลัพธ์เท่าเดิม) ลดงาน render ฝั่งเว็บ
+    const prev = agents.get(ev.sessionId);
+    const same = (k) => JSON.stringify(prev?.[k]) === JSON.stringify(ev[k]);
+    if (prev && Object.keys(ev).every((k) => k === 'type' || k === 'ts' || same(k))) return;
+    agents.set(ev.sessionId, { ...prev, ...ev });
+  }
 
   const data = JSON.stringify({ ...ev, ts: Date.now() });
   for (const client of wss.clients) if (client.readyState === 1) client.send(data);
@@ -238,6 +267,14 @@ server.on('error', (err) => {
   console.error(`[bridge] พอร์ต ${PORT} ถูกใช้อยู่ — ใช้ bridge ตัวที่เปิดไว้แล้ว`);
 });
 wss.on('error', () => {}); // ws ส่ง error ของ server ซ้ำมาที่นี่ด้วย
+
+// session ที่เงียบไปนาน (Claude ถูก kill / เครื่องดับ → ไม่มี SessionEnd) → เก็บกวาดออกจากฉาก
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, m] of meta) {
+    if (now - m.lastSeen > STALE_MS && agents.has(id)) applyAndBroadcast({ type: 'agent_remove', sessionId: id });
+  }
+}, 60_000).unref();
 
 // ผูกกับ 127.0.0.1 เท่านั้น → เครื่องอื่นในเครือข่ายส่ง event ปลอมเข้ามาไม่ได้
 server.listen(PORT, '127.0.0.1', () => {

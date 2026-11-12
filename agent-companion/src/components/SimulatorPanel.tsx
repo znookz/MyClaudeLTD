@@ -83,10 +83,10 @@ interface Props {
 }
 
 const SOCKET_LABEL: Record<SocketStatus, { text: string; cls: string }> = {
-  open: { text: 'เชื่อมต่อแล้ว', cls: 'text-emerald-300 bg-emerald-500/15' },
-  connecting: { text: 'กำลังเชื่อมต่อ…', cls: 'text-amber-300 bg-amber-500/15' },
-  closed: { text: 'หลุด · กำลังลองใหม่', cls: 'text-rose-300 bg-rose-500/15' },
-  disabled: { text: 'ปิดอยู่', cls: 'text-slate-400 bg-slate-500/15' },
+  open: { text: 'เชื่อมต่อแล้ว', cls: 'text-emerald-600 bg-emerald-500/15' },
+  connecting: { text: 'กำลังเชื่อมต่อ…', cls: 'text-amber-600 bg-amber-500/15' },
+  closed: { text: 'หลุด · กำลังลองใหม่', cls: 'text-rose-600 bg-rose-500/15' },
+  disabled: { text: 'ปิดอยู่', cls: 'text-[#8b7a9b] bg-slate-500/15' },
 };
 
 const SAMPLE_EVENT = JSON.stringify(
@@ -107,9 +107,9 @@ const SAMPLE_EVENT = JSON.stringify(
 
 function Section({ title, children, right }: { title: string; children: ReactNode; right?: ReactNode }) {
   return (
-    <section className="border-b border-white/5 px-4 py-4">
+    <section className="border-b border-[#f0e3ef] px-4 py-4">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">{title}</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-[#8b7a9b]">{title}</h2>
         {right}
       </div>
       {children}
@@ -132,8 +132,8 @@ function Btn({
 }) {
   const styles = {
     primary: 'bg-sky-500 text-slate-950 hover:bg-sky-400',
-    ghost: 'border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10',
-    danger: 'border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20',
+    ghost: 'border border-[#eadbea] bg-[#f6ecf5] text-[#4f3f63] hover:bg-[#efe3f1]',
+    danger: 'border border-rose-500/30 bg-rose-500/10 text-rose-600 hover:bg-rose-500/20',
   }[variant];
   return (
     <button
@@ -168,13 +168,13 @@ export default function SimulatorPanel(p: Props) {
   return (
     <aside
       aria-label="Simulator"
-      className="flex w-full flex-col overflow-hidden rounded-[18px] border border-[#263247] bg-[#131A26]"
+      className="flex w-full flex-col overflow-hidden rounded-[18px] border border-[#eadbea] bg-white"
     >
       {/* ---------- Connection & sound ---------- */}
       <Section title="การเชื่อมต่อ">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
-            <div className="truncate font-mono text-xs text-slate-300">{p.wsUrl}</div>
+            <div className="truncate font-mono text-xs text-[#6b5a7d]">{p.wsUrl}</div>
             <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] ${socket.cls}`}>{socket.text}</span>
           </div>
           <div className="flex gap-2">
@@ -215,14 +215,14 @@ export default function SimulatorPanel(p: Props) {
             ล้างฉาก
           </Btn>
         </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+        <p className="mt-2 text-[11px] leading-relaxed text-[#8b7a9b]">
           กลุ่มร่วมงาน = ≥ 2 ตัวที่มี taskId เดียวกันและอยู่ใน coding/testing พร้อมกัน · เปิดเสียงเพื่อฟังเสียงคุยและ jingle
         </p>
       </Section>
 
       {/* ---------- Per-agent controls ---------- */}
       <Section title={`Agents (${p.agents.length})`}>
-        {p.agents.length === 0 && <p className="text-xs text-slate-500">ยังไม่มี agent</p>}
+        {p.agents.length === 0 && <p className="text-xs text-[#8b7a9b]">ยังไม่มี agent</p>}
         <ul className="flex flex-col gap-2">
           {p.agents.map((a) => {
             const meta = STATUS_META[a.status];
@@ -233,7 +233,7 @@ export default function SimulatorPanel(p: Props) {
               <li
                 key={a.sessionId}
                 className={`rounded-xl border p-3 transition ${
-                  selected ? 'border-sky-400/60 bg-sky-500/5' : 'border-white/10 bg-white/[0.02]'
+                  selected ? 'border-sky-400/60 bg-sky-500/5' : 'border-[#eadbea] bg-white/[0.02]'
                 }`}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -241,13 +241,13 @@ export default function SimulatorPanel(p: Props) {
                     <div className="flex items-center gap-2">
                       <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: meta.color }} />
                       <span className="truncate text-sm font-semibold">{a.author}</span>
-                      <span className="font-mono text-[10px] text-slate-500">{a.sessionId.slice(0, 10)}</span>
+                      <span className="font-mono text-[10px] text-[#8b7a9b]">{a.sessionId.slice(0, 10)}</span>
                     </div>
-                    <div className="mt-0.5 truncate text-xs text-slate-400">
+                    <div className="mt-0.5 truncate text-xs text-[#8b7a9b]">
                       {a.task}
-                      {inCollab && <span className="ml-1.5 text-cyan-300">· กำลังร่วมงาน</span>}
+                      {inCollab && <span className="ml-1.5 text-cyan-600">· กำลังร่วมงาน</span>}
                       {a.subAgents.length > 0 && (
-                        <span className="ml-1.5 text-fuchsia-300">· sub-agent ×{a.subAgents.length}</span>
+                        <span className="ml-1.5 text-fuchsia-600">· sub-agent ×{a.subAgents.length}</span>
                       )}
                     </div>
                   </button>
@@ -257,7 +257,7 @@ export default function SimulatorPanel(p: Props) {
                       onClick={() => p.onSpawnSub(a.sessionId)}
                       title="เรียก sub-agent เพิ่ม 1 ตัว"
                       aria-label="เรียก sub-agent เพิ่ม"
-                      className="flex items-center gap-0.5 rounded-md p-1.5 text-fuchsia-300 hover:bg-fuchsia-500/20"
+                      className="flex items-center gap-0.5 rounded-md p-1.5 text-fuchsia-600 hover:bg-fuchsia-500/20"
                     >
                       <Bot size={14} />
                       <Plus size={10} />
@@ -268,7 +268,7 @@ export default function SimulatorPanel(p: Props) {
                         onClick={() => p.onFinishSub(a.sessionId)}
                         title="ให้ sub-agent 1 ตัวทำงานเสร็จ"
                         aria-label="sub-agent ทำงานเสร็จ"
-                        className="flex items-center gap-0.5 rounded-md p-1.5 text-emerald-300 hover:bg-emerald-500/20"
+                        className="flex items-center gap-0.5 rounded-md p-1.5 text-emerald-600 hover:bg-emerald-500/20"
                       >
                         <Bot size={14} />
                         <Check size={10} />
@@ -279,7 +279,7 @@ export default function SimulatorPanel(p: Props) {
                       onClick={() => p.onToggleTask(a)}
                       title={shared ? 'แยกไปทำงานเดี่ยว' : `เข้าร่วมงาน ${p.sharedTaskId}`}
                       aria-label={shared ? 'แยกไปทำงานเดี่ยว' : 'เข้าร่วมงานกลุ่ม'}
-                      className="rounded-md p-1.5 text-slate-400 hover:bg-white/10 hover:text-white"
+                      className="rounded-md p-1.5 text-[#8b7a9b] hover:bg-[#efe3f1] hover:text-[#3d2f4f]"
                     >
                       {shared ? <Unlink2 size={14} /> : <Link2 size={14} />}
                     </button>
@@ -288,7 +288,7 @@ export default function SimulatorPanel(p: Props) {
                       onClick={() => p.onRemove(a.sessionId)}
                       title="ลบออกจากฉาก"
                       aria-label="ลบออกจากฉาก"
-                      className="rounded-md p-1.5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
+                      className="rounded-md p-1.5 text-[#8b7a9b] hover:bg-rose-500/20 hover:text-rose-600"
                     >
                       <X size={14} />
                     </button>
@@ -358,9 +358,9 @@ export default function SimulatorPanel(p: Props) {
           spellCheck={false}
           rows={8}
           aria-label="JSON event"
-          className="w-full resize-y rounded-lg border border-white/10 bg-black/40 p-2 font-mono text-[11px] text-slate-200 outline-none focus:border-sky-400/60"
+          className="w-full resize-y rounded-lg border border-[#eadbea] bg-[#f6ecf5] p-2 font-mono text-[11px] text-[#4f3f63] outline-none focus:border-sky-400/60"
         />
-        {jsonError && <p className="mt-1 text-[11px] text-rose-300">{jsonError}</p>}
+        {jsonError && <p className="mt-1 text-[11px] text-rose-600">{jsonError}</p>}
         <div className="mt-2">
           <Btn onClick={sendJson} icon={Send}>
             ส่ง event เข้าฉาก
@@ -371,12 +371,12 @@ export default function SimulatorPanel(p: Props) {
       {/* ---------- Event log ---------- */}
       <Section title="Event log">
         <ul className="flex flex-col gap-1 font-mono text-[11px]">
-          {p.log.length === 0 && <li className="text-slate-500">—</li>}
+          {p.log.length === 0 && <li className="text-[#8b7a9b]">—</li>}
           {p.log.map((l) => (
-            <li key={l.id} className="flex gap-2 text-slate-400">
-              <span className="text-slate-600">{l.time.toLocaleTimeString('th-TH', { hour12: false })}</span>
-              <span className={l.source === 'ws' ? 'text-sky-400' : 'text-violet-400'}>{l.source}</span>
-              <span className="truncate text-slate-300">{l.text}</span>
+            <li key={l.id} className="flex gap-2 text-[#8b7a9b]">
+              <span className="text-[#6b5a7d]">{l.time.toLocaleTimeString('th-TH', { hour12: false })}</span>
+              <span className={l.source === 'ws' ? 'text-sky-600' : 'text-violet-600'}>{l.source}</span>
+              <span className="truncate text-[#6b5a7d]">{l.text}</span>
             </li>
           ))}
         </ul>

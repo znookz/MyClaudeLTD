@@ -5,7 +5,7 @@ export default function Avatar({ name, size = 24 }: { name: string; size?: numbe
   return (
     <span
       aria-hidden="true"
-      className="inline-flex shrink-0 items-center justify-center rounded-full font-bold text-[#0B0F17]"
+      className="inline-flex shrink-0 items-center justify-center rounded-full font-bold text-[#3d2f4f]"
       style={{ width: size, height: size, background: authorColor(name), fontSize: Math.round(size * 0.52) }}
     >
       {initialOf(name)}

@@ -17,11 +17,11 @@ export default function SessionTable({ agents, selectedId, filter, onSelect }: P
   const now = useNow();
 
   return (
-    <section aria-label="รายการ sessions" className="overflow-hidden rounded-[18px] border border-[#263247] bg-[#131A26]">
-      <div className="border-b border-[#1E2838] px-[18px] py-3.5 text-sm font-semibold">ทุก session</div>
+    <section aria-label="รายการ sessions" className="overflow-hidden rounded-[18px] border border-[#eadbea] bg-white">
+      <div className="border-b border-[#f0e3ef] px-[18px] py-3.5 text-sm font-semibold">ทุก session</div>
       <div className="overflow-x-auto">
         <div className="min-w-[1130px]">
-          <div className={`${GRID} px-[18px] py-2.5 text-xs text-[#93A0B4]`}>
+          <div className={`${GRID} px-[18px] py-2.5 text-xs text-[#8b7a9b]`}>
             <span>Session</span>
             <span>สั่งงานโดย</span>
             <span>Agent</span>
@@ -31,7 +31,7 @@ export default function SessionTable({ agents, selectedId, filter, onSelect }: P
             <span>เวลา</span>
           </div>
           {agents.length === 0 && (
-            <div className="border-t border-[#1E2838] px-[18px] py-5 text-sm text-[#93A0B4]">ยังไม่มี session</div>
+            <div className="border-t border-[#f0e3ef] px-[18px] py-5 text-sm text-[#8b7a9b]">ยังไม่มี session</div>
           )}
           {agents.map((a, i) => {
             const meta = STATUS_META[a.status];
@@ -43,21 +43,21 @@ export default function SessionTable({ agents, selectedId, filter, onSelect }: P
                 key={a.sessionId}
                 onClick={() => onSelect(a.sessionId)}
                 aria-pressed={a.sessionId === selectedId}
-                className={`${GRID} min-h-[52px] w-full cursor-pointer items-center border-0 border-t border-[#1E2838] px-[18px] py-2 text-left text-sm text-[#E6EBF2] transition-opacity hover:bg-[#1B2433] ${
-                  a.sessionId === selectedId ? 'bg-[#1B2433]' : 'bg-transparent'
+                className={`${GRID} min-h-[52px] w-full cursor-pointer items-center border-0 border-t border-[#f0e3ef] px-[18px] py-2 text-left text-sm text-[#3d2f4f] transition-opacity hover:bg-[#f6ecf5] ${
+                  a.sessionId === selectedId ? 'bg-[#f6ecf5]' : 'bg-transparent'
                 } ${dimmed ? 'opacity-35' : ''}`}
               >
                 <span className="truncate font-semibold">
-                  <span className="font-mono text-xs font-normal text-[#93A0B4]">#{i + 1}</span> {a.task}
+                  <span className="font-mono text-xs font-normal text-[#8b7a9b]">#{i + 1}</span> {a.task}
                 </span>
                 <span className="flex items-center gap-2">
                   <Avatar name={a.author} size={22} />
                   <span className="truncate">{a.author}</span>
                 </span>
-                <span className="truncate text-[#B7C2D3]">
-                  Main agent <span className="font-mono text-[11px] text-[#93A0B4]">{a.sessionId.slice(0, 6)}</span>
+                <span className="truncate text-[#6b5a7d]">
+                  Main agent <span className="font-mono text-[11px] text-[#8b7a9b]">{a.sessionId.slice(0, 6)}</span>
                   {a.subAgents.length > 0 && (
-                    <span className="ml-1.5 rounded-full bg-fuchsia-500/15 px-1.5 py-0.5 text-[11px] text-fuchsia-300">
+                    <span className="ml-1.5 rounded-full bg-fuchsia-500/15 px-1.5 py-0.5 text-[11px] text-fuchsia-600">
                       +{a.subAgents.length} sub
                     </span>
                   )}
@@ -74,8 +74,8 @@ export default function SessionTable({ agents, selectedId, filter, onSelect }: P
                   <Icon size={13} className="shrink-0" aria-hidden="true" />
                   <span className="truncate">{ACTIVITY_META[a.activity].section}</span>
                 </span>
-                <span className="truncate font-mono text-[12.5px] text-[#B7C2D3]">{a.file || '—'}</span>
-                <span className="font-mono text-[12.5px] text-[#93A0B4]">{formatElapsed(now - a.startedAt)}</span>
+                <span className="truncate font-mono text-[12.5px] text-[#6b5a7d]">{a.file || '—'}</span>
+                <span className="font-mono text-[12.5px] text-[#8b7a9b]">{formatElapsed(now - a.startedAt)}</span>
               </button>
             );
           })}

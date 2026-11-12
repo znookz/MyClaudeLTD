@@ -149,6 +149,28 @@ export function playSuccessJingle() {
   });
 }
 
+/** เสียงแจ้งเตือน: attention = ติ๊งต่อง (รอคุณ), error = โทนต่ำสองจังหวะ */
+export function playAlert(kind: 'attention' | 'error') {
+  if (!isAudioReady()) return;
+  const c = ctx!;
+  const notes = kind === 'attention' ? [880, 1174.66] : [330, 247];
+  const start = c.currentTime + 0.02;
+  notes.forEach((freq, i) => {
+    const t = start + i * 0.2;
+    const env = c.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(0.3, t + 0.02);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    env.connect(master!);
+    const o = c.createOscillator();
+    o.type = kind === 'attention' ? 'sine' : 'triangle';
+    o.frequency.value = freq;
+    o.connect(env);
+    o.start(t);
+    o.stop(t + 0.35);
+  });
+}
+
 // formant คร่าว ๆ ของสระ a / e / i / o / u → ทำให้ฟังเหมือน "คำพูด" ไม่ใช่แค่เสียงบี๊บ
 const FORMANTS = [
   [800, 1200],
